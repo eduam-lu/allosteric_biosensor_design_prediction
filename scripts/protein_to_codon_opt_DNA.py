@@ -13,7 +13,24 @@ import argparse
 
 ### PARAMS ######################################################################################
 
-remove_aa = remove_aa = [('R','K')] # None or empty list if no changes. If you wanna replace ARG with LYS for example: [R,K]
+id_col_name = "fileID" # Indicate the name of the column in your csv that contains the protein IDs
+seq_col_name = "seq" # indicate the name of the column in your csv that contains the protein sequence 
+
+organism = "Escherichia coli K12" # Select one of the organisms that appear in IDT's users interface
+avoid_restriction_sites = "BsaI" # Include the name of the enzyme to avoid. Must be in IDT's interface aswell
+
+remove_aa = [('R','K')] # None or empty list if no changes. If you wanna replace ARG with LYS for example: (R,K)
+
+terminal_T= True # True for making the last nucleotide of the sequence to end with T
+
+include_stop_codon= False # Ensures that the sequences in the fasta will start with ATG. IMPORTANT! If false, stop codons will be removed if they are there
+include_start_codon= True # Ensures that the sequences in the fasta will finish with a stop codon. Default TAA
+
+DNA_prefix = "" # The string of nucleotides indicated here will be appended to the beginning of every coding sequence. i.e a restriction site
+DNA_suffix = "" # The string of nucleotides indicated here will be appended to the end of every coding sequence. i.e a restriction site
+
+fasta_single_line = True # FASTA output will be single line, overrides any line length
+fasta_line_length = 60 # FASTA output will be in lines of this length
 
 ### FUNCTIONS ###################################################################################
 
@@ -48,7 +65,7 @@ def codoonopt_call(bearer_token, sequence, name="MyAminoAcidSequence"):
         "Authorization": f"Bearer {bearer_token}"
     }
     payload = {
-        "Organism": "Escherichia coli K12",
+        "Organism": organism,
         "optimizationItems": [
             {
                 "Name": name,
@@ -190,15 +207,106 @@ def process_aa_sequence(seq,remove_aa):
             seq = seq.replace(aa_from, aa_to)
     return seq
 
-def process_dna_sequence(seq):
+def mutate_to_T(seq,name):
+    
+    # 1. If the last letter is T, return unchanged
+    if seq.endswith('T'):
+        return seq
+
+    # 2. Extract the last codon and the prefix
+    if len(seq) < 3:
+        return seq # Safety for short sequences
+        
+    old_codon = seq[-3:]
+    prefix_seq = seq[:-3]
+
+    # Data: Genetic Code (Codon -> AA)
+    genetic_code = {
+        'ATA':'I', 'ATC':'I', 'ATT':'I', 'ATG':'M',
+        'ACA':'T', 'ACC':'T', 'ACG':'T', 'ACT':'T',
+        'AAC':'N', 'AAT':'N', 'AAA':'K', 'AAG':'K',
+        'AGC':'S', 'AGT':'S', 'AGA':'R', 'AGG':'R',
+        'CTA':'L', 'CTC':'L', 'CTG':'L', 'CTT':'L',
+        'CCA':'P', 'CCC':'P', 'CCG':'P', 'CCT':'P',
+        'CAC':'H', 'CAT':'H', 'CAA':'Q', 'CAG':'Q',
+        'CGA':'R', 'CGC':'R', 'CGG':'R', 'CGT':'R',
+        'GTA':'V', 'GTC':'V', 'GTG':'V', 'GTT':'V',
+        'GCA':'A', 'GCC':'A', 'GCG':'A', 'GCT':'A',
+        'GAC':'D', 'GAT':'D', 'GAA':'E', 'GAG':'E',
+        'GGA':'G', 'GGC':'G', 'GGG':'G', 'GGT':'G',
+        'TCA':'S', 'TCC':'S', 'TCG':'S', 'TCT':'S',
+        'TTC':'F', 'TTT':'F', 'TTA':'L', 'TTG':'L',
+        'TAC':'Y', 'TAT':'Y', 'TAA':'_', 'TAG':'_',
+        'TGC':'C', 'TGT':'C', 'TGA':'_', 'TGG':'W',
+    }
+    
+    # Reverse Map (AA -> List of Codons ending in T)
+    # We pre-calculate this to make the function faster
+    aa_to_T_codons = {
+        'I': ['ATT'], 'T': ['ACT'], 'N': ['AAT'], 'S': ['AGT', 'TCT'],
+        'R': ['CGT'], 'L': ['CTT'], 'P': ['CCT'], 'H': ['CAT'],
+        'V': ['GTT'], 'A': ['GCT'], 'D': ['GAT'], 'G': ['GGT'],
+        'F': ['TTT'], 'Y': ['TAT'], 'C': ['TGT'], '_': ['TAA'] # Stop
+    }
+
+    # Similarity Map (If AA has no T-codon, swap to this AA)
+    # Logic: Charge > Polarity > Structure
+    similarity_substitutions = {
+        'M': 'I', # Methionine -> Isoleucine (Both Hydrophobic, maintain structure)
+        'K': 'R', # Lysine -> Arginine (Both Positively Charged)
+        'Q': 'H', # Glutamine -> Histidine (Both Polar/Positively charged context)
+        'E': 'D', # Glutamic Acid -> Aspartic Acid (Both Negatively Charged)
+        'W': 'F', # Tryptophan -> Phenylalanine (Both Aromatic/Hydrophobic)
+    }
+
+    # 3. Find the Amino Acid
+    current_aa = genetic_code.get(old_codon)
+    
+    if not current_aa:
+        return seq + " [Error: Invalid Codon]"
+
+    # 4. Find a codon for this AA that ends in T
+    if current_aa in aa_to_T_codons:
+        # We found a synonymous codon ending in T!
+        new_codon = aa_to_T_codons[current_aa][0] # Pick the first available
+        return prefix_seq + new_codon
+
+    # 5. If no T-ending codon exists, swap Amino Acid
+    else:
+        # Find the best substitute
+        alt_aa = similarity_substitutions.get(current_aa)
+        
+        if alt_aa:
+            new_codon = aa_to_T_codons[alt_aa][0]
+            print(f"⚠️  WARNING: {name} Mutated Amino Acid from {current_aa} to {alt_aa} to satisfy 'T' ending.")
+            return prefix_seq + new_codon
+        else:
+            print(f"⚠️  WARNING: {name} Could not find a suitable substitution for {current_aa}.")
+            return seq
+
+def process_dna_sequence(seq,name):
+    seq = seq.upper()  # Ensure consistency
+
+    # Convert last nucleotide to T if needed
+    if terminal_T:
+        seq = mutate_to_T(seq,name)
+    
     # Ensure there is an starting codon
-    if not seq.startswith("ATG"):
-        seq = "ATG" + seq
+    if include_start_codon:
+        if not seq.startswith("ATG"):
+            seq = "ATG" + seq
     # Ensure there is a finish codon
-    if not seq.endswith(("TAA","TAG","TGA")):
-        seq = seq + "TAA"
+    if include_stop_codon:
+        if not seq.endswith(("TAA","TAG","TGA")):
+            seq = seq + "TAA"
+    else:
+        if seq.endswith(("TAA","TAG","TGA")):
+            seq = seq[:-3]
+    # Add suffix and prefix
+    seq = DNA_prefix + seq + DNA_suffix
     # If insert mode, apply insert treatment
     # under development
+
     return seq
 
 def generate_DNA_cds_multifasta(sequence_df,general_output_path):
@@ -208,18 +316,18 @@ def generate_DNA_cds_multifasta(sequence_df,general_output_path):
 
     # Iterate the sequence df filling the DNA df
     for _, row in sequence_df.iterrows():
-        name, AA_seq = row["fileID"], row["seq"]
+        name, AA_seq = row[id_col_name], row[seq_col_name]
         AA_seq = process_aa_sequence(AA_seq,remove_aa)
-        optresults = optimize_codon_sequence(AA_seq, avoid_restriction_enzyme="BsaI")
+        optresults = optimize_codon_sequence(AA_seq, avoid_restriction_enzyme=avoid_restriction_sites)
         DNA_seq = optresults["sequence"]
         #assert str(translate_DNA_to_protein(DNA_seq)) == str(AA_seq)
-        DNA_seq = process_dna_sequence(DNA_seq)
+        DNA_seq = process_dna_sequence(DNA_seq,name)
         if optresults is None:
             raise ValueError(f"No optimized codon sequence found for {name}")
         else:
             # Prepare restriction enzyme string
-            enzyme_string = ",".join(optresults["restriction_enzymes"])
-            recognition_sites_string = ",".join(optresults["restriction_recognition_sites"])
+            enzyme_string = "|".join(optresults["restriction_enzymes"])
+            recognition_sites_string = "|".join(optresults["restriction_recognition_sites"])
             # Generate the novel dataframe
             df_opt_codon_indiv = {"name": name, "aa_sequence": AA_seq, "codon_sequence": DNA_seq,
                             "restriction_enzymes": enzyme_string,
@@ -230,9 +338,9 @@ def generate_DNA_cds_multifasta(sequence_df,general_output_path):
         df_opt_codon_global = pd.concat([df_opt_codon_global,df_opt_codon_indiv])
     
     # Generate the protein multifasta
-    generate_multifasta(df_opt_codon_global,"name", "aa_sequence",f"{general_output_path}/protein_sequences.fasta")
+    generate_multifasta(df_opt_codon_global,"name", "aa_sequence",f"{general_output_path}/protein_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
     # Generate the DNA multifasta
-    generate_multifasta(df_opt_codon_global,"fasta_header", "codon_sequence",f"{general_output_path}/codon_optimized_DNA_sequences.fasta")
+    generate_multifasta(df_opt_codon_global,"fasta_header", "codon_sequence",f"{general_output_path}/codon_optimized_DNA_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
     # Save global file as csv
     df_opt_codon_global.to_csv(f"{general_output_path}/codon_optimized_DNA_sequences.csv", index=False)
     return
