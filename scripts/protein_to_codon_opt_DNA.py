@@ -10,18 +10,18 @@ from Bio.Data import CodonTable
 from pathlib import Path
 import textwrap
 import argparse
-
+import math
 ### PARAMS ######################################################################################
 
-id_col_name = "fileID" # Indicate the name of the column in your csv that contains the protein IDs
-seq_col_name = "seq" # indicate the name of the column in your csv that contains the protein sequence 
+id_col_name = "Protein Name" # Indicate the name of the column in your csv that contains the protein IDs
+seq_col_name = "Sequence" # indicate the name of the column in your csv that contains the protein sequence 
 
 organism = "Escherichia coli K12" # Select one of the organisms that appear in IDT's users interface
 avoid_restriction_sites = "BsaI" # Include the name of the enzyme to avoid. Must be in IDT's interface aswell
 
 remove_aa = [('R','K')] # None or empty list if no changes. If you wanna replace ARG with LYS for example: (R,K)
 
-terminal_T= True # True for making the last nucleotide of the sequence to end with T
+terminal_T= False # True for making the last nucleotide of the sequence to end with T
 
 include_stop_codon= False # Ensures that the sequences in the fasta will start with ATG. IMPORTANT! If false, stop codons will be removed if they are there
 include_start_codon= True # Ensures that the sequences in the fasta will finish with a stop codon. Default TAA
@@ -154,6 +154,51 @@ def translate_DNA_to_protein(seq, end_with_stop_codon = True):
             protein_seq += ct.forward_table[codon]
     return protein_seq
 
+def calculate_net_charge(sequence, pH=7.4):
+    """
+    Calculates the net charge of a protein sequence at a specific pH 
+    using the Henderson-Hasselbalch equation and standard pKa values (EMBOSS scale).
+    """
+    # Standard pKa values (EMBOSS scale)
+    pKa_values = {
+        # Positively charged (Basic)
+        'K': 10.8, # Lysine
+        'R': 12.5, # Arginine
+        'H': 6.5,  # Histidine
+        # Negatively charged (Acidic)
+        'D': 3.9,  # Aspartic Acid
+        'E': 4.1,  # Glutamic Acid
+        'C': 8.5,  # Cysteine (Weak)
+        'Y': 10.1, # Tyrosine (Weak)
+        # Termini
+        'N_TERM': 8.6, # Amino terminus
+        'C_TERM': 3.6  # Carboxyl terminus
+    }
+
+    seq = sequence.upper()
+    net_charge = 0.0
+
+    # 1. Calculate charge of the N-terminus (Positive)
+    net_charge += 1.0 / (1.0 + math.pow(10, (pH - pKa_values['N_TERM'])))
+
+    # 2. Calculate charge of the C-terminus (Negative)
+    net_charge -= 1.0 / (1.0 + math.pow(10, (pKa_values['C_TERM'] - pH)))
+
+    # 3. Calculate internal residues
+    for aa in seq:
+        if aa in pKa_values:
+            pka = pKa_values[aa]
+            
+            # Basic amino acids (Positive contribution: K, R, H)
+            if aa in ['K', 'R', 'H']:
+                net_charge += 1.0 / (1.0 + math.pow(10, (pH - pka)))
+            
+            # Acidic amino acids (Negative contribution: D, E, C, Y)
+            else:
+                net_charge -= 1.0 / (1.0 + math.pow(10, (pka - pH)))
+
+    return net_charge
+
 def generate_multifasta(df, id_column, seq_column, output, line_width=60, single_line=False):
     """
     Generates a multi-FASTA file from a pandas DataFrame.
@@ -200,12 +245,32 @@ def generate_multifasta(df, id_column, seq_column, output, line_width=60, single
     except IOError as e:
         print(f"Error writing to file {output}: {e}")
 
-def process_aa_sequence(seq,remove_aa):
-    # Replace aa if needed
+def process_aa_sequence(seq, remove_aa, name):
+    # 1. Safety: Ensure seq is a string and remove hidden whitespace
+    seq = str(seq).strip()
+    
+    total_replacements = 0  # Initialize accumulator
+    
+    # 2. Iterate through replacements
     if remove_aa:
         for aa_from, aa_to in remove_aa:
-            seq = seq.replace(aa_from, aa_to)
-    return seq
+            # Count current occurrence
+            count = seq.count(aa_from)
+            
+            if count > 0:
+                # Accumulate the total count (Fixes the bug)
+                total_replacements += count 
+                print(f"⚠️  WARNING: Replaced {count} instances of '{aa_from}' with '{aa_to}' in {name}.")
+                
+                # Perform replacement
+                seq = seq.replace(aa_from, aa_to)
+    
+    # 3. Compute net charge (using the function we defined earlier)
+    # Ensure calculate_net_charge is defined in your script
+    charge = calculate_net_charge(seq)
+    
+    # 4. Return the list
+    return [seq, total_replacements, charge]
 
 def mutate_to_T(seq,name):
     
@@ -317,7 +382,8 @@ def generate_DNA_cds_multifasta(sequence_df,general_output_path):
     # Iterate the sequence df filling the DNA df
     for _, row in sequence_df.iterrows():
         name, AA_seq = row[id_col_name], row[seq_col_name]
-        AA_seq = process_aa_sequence(AA_seq,remove_aa)
+        aa_result = process_aa_sequence(AA_seq,remove_aa, name)
+        AA_seq,replacements,charge = aa_result[0],aa_result[1],aa_result[2]
         optresults = optimize_codon_sequence(AA_seq, avoid_restriction_enzyme=avoid_restriction_sites)
         DNA_seq = optresults["sequence"]
         #assert str(translate_DNA_to_protein(DNA_seq)) == str(AA_seq)
@@ -333,12 +399,14 @@ def generate_DNA_cds_multifasta(sequence_df,general_output_path):
                             "restriction_enzymes": enzyme_string,
                             "restriction_recognition_sites": recognition_sites_string,
                             "complexity_score": optresults["complexity_score"],
-                            "fasta_header": f"{name}|CDS|{optresults['complexity_score']}|{enzyme_string}|{recognition_sites_string}"}
+                            "NetCharge": charge,
+                            "fasta_header": f"{name}|CDS|{optresults['complexity_score']}|{enzyme_string}|{recognition_sites_string}",
+                            "protein_header": f"{name}|PROT|{len(AA_seq)} aa |{replacements}AA_replacements|NetCharge:{charge}"}
             df_opt_codon_indiv = pd.DataFrame(df_opt_codon_indiv, index=[0])
         df_opt_codon_global = pd.concat([df_opt_codon_global,df_opt_codon_indiv])
     
     # Generate the protein multifasta
-    generate_multifasta(df_opt_codon_global,"name", "aa_sequence",f"{general_output_path}/protein_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
+    generate_multifasta(df_opt_codon_global,"protein_header", "aa_sequence",f"{general_output_path}/protein_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
     # Generate the DNA multifasta
     generate_multifasta(df_opt_codon_global,"fasta_header", "codon_sequence",f"{general_output_path}/codon_optimized_DNA_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
     # Save global file as csv
