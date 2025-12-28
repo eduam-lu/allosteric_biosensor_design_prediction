@@ -11,6 +11,7 @@ from pathlib import Path
 import textwrap
 import argparse
 import math
+import random
 ### PARAMS ######################################################################################
 
 id_col_name = "Protein Name" # Indicate the name of the column in your csv that contains the protein IDs
@@ -20,6 +21,10 @@ organism = "Escherichia coli K12" # Select one of the organisms that appear in I
 avoid_restriction_sites = "BsaI" # Include the name of the enzyme to avoid. Must be in IDT's interface aswell
 
 remove_aa = [('R','K')] # None or empty list if no changes. If you wanna replace ARG with LYS for example: (R,K)
+limit_cysteine = 1 # float or None. If float, in sequences with more than x cysteines, cysteines will be replaced with serine until the limit is reached.
+
+limit_net_charge = -3.0 # None or float value. If float is given, sequences with net charge above this value will edited to reduce net charge 
+pH = 7.4 # pH at which net charge is calculated
 
 terminal_T= False # True for making the last nucleotide of the sequence to end with T
 
@@ -199,6 +204,47 @@ def calculate_net_charge(sequence, pH=7.4):
 
     return net_charge
 
+def adjust_net_charge(seq, target_charge):
+    """
+    Iteratively replaces positively charged amino acids (K, R, H) with 
+    Glutamic Acid (E) until the net charge is <= target_charge.
+    """
+    # 1. Check if adjustment is even needed
+    current_charge = calculate_net_charge(seq)
+    if current_charge <= target_charge:
+        return seq, 0 # Return original sequence and 0 replacements
+
+    # 2. Identify positions of positive residues (K, R, H)
+    # We store indices to replace them specifically
+    positive_aa_positions = [i for i, aa in enumerate(seq) if aa in ['K', 'R', 'H']]
+    
+    # 3. Shuffle to randomize which residues get replaced first
+    # This avoids clustering mutations at the N-terminus
+    random.shuffle(positive_aa_positions)
+
+    # 4. Convert to list for mutable editing
+    seq_list = list(seq)
+    replacements_count = 0
+
+    # 5. Iterate and mutate
+    for pos in positive_aa_positions:
+        # Break if we have reached the target
+        if current_charge <= target_charge:
+            break
+        
+        # Perform replacement: Positive AA -> Glutamic Acid (E)
+        # This causes a large charge drop (approx -2 per change at pH 7.4)
+        seq_list[pos] = 'E'
+        replacements_count += 1
+        
+        # Re-calculate charge
+        current_seq = "".join(seq_list)
+        current_charge = calculate_net_charge(current_seq)
+
+    final_seq = "".join(seq_list)
+
+    return final_seq, current_charge
+
 def generate_multifasta(df, id_column, seq_column, output, line_width=60, single_line=False):
     """
     Generates a multi-FASTA file from a pandas DataFrame.
@@ -260,15 +306,31 @@ def process_aa_sequence(seq, remove_aa, name):
             if count > 0:
                 # Accumulate the total count (Fixes the bug)
                 total_replacements += count 
-                print(f"⚠️  WARNING: Replaced {count} instances of '{aa_from}' with '{aa_to}' in {name}.")
+                print(f"⚠️  REPLACEMENT WARNING: Replaced {count} instances of '{aa_from}' with '{aa_to}' in {name}.")
                 
                 # Perform replacement
                 seq = seq.replace(aa_from, aa_to)
     
-    # 3. Compute net charge (using the function we defined earlier)
-    # Ensure calculate_net_charge is defined in your script
+    # 3. Compute net charge 
     charge = calculate_net_charge(seq)
     
+    if limit_net_charge is not None and charge > limit_net_charge:
+        print(f"⚠️  CHARGE WARNING: Net charge of {name} is {charge}, exceeding limit of {limit_net_charge}. Adjusting sequence.")
+        print(f"Original Sequence: {seq}")
+        seq, charge = adjust_net_charge(seq, limit_net_charge)
+    
+    # 4. Cysteine check
+    if limit_cysteine is not None:
+        cysteine_count = seq.count('C')
+        if cysteine_count > limit_cysteine:
+            print(f"⚠️  CYSTEINE WARNING: {cysteine_count} cys in {name}, exceeding limit of {limit_cysteine}. Replacing C with S.")
+            while cysteine_count > limit_cysteine:
+                # Replace first occurrence of C with S
+                seq = seq.replace('C', 'S', 1)
+                cysteine_count -= 1
+                total_replacements += 1
+            
+    cysteine_count = seq.count('C')
     # 4. Return the list
     return [seq, total_replacements, charge]
 
@@ -374,43 +436,67 @@ def process_dna_sequence(seq,name):
 
     return seq
 
-def generate_DNA_cds_multifasta(sequence_df,general_output_path):
-
+def generate_DNA_cds_multifasta(sequence_df, general_output_path):
     # Initialise DNA df
     df_opt_codon_global = pd.DataFrame()
 
     # Iterate the sequence df filling the DNA df
     for _, row in sequence_df.iterrows():
         name, AA_seq = row[id_col_name], row[seq_col_name]
-        aa_result = process_aa_sequence(AA_seq,remove_aa, name)
-        AA_seq,replacements,charge = aa_result[0],aa_result[1],aa_result[2]
+        print(f"> {name}")
+        print(f"Original:{AA_seq}")
+        aa_result = process_aa_sequence(AA_seq, remove_aa, name)
+        AA_seq, replacements, charge = aa_result[0], aa_result[1], aa_result[2]
+        
         optresults = optimize_codon_sequence(AA_seq, avoid_restriction_enzyme=avoid_restriction_sites)
-        DNA_seq = optresults["sequence"]
-        #assert str(translate_DNA_to_protein(DNA_seq)) == str(AA_seq)
-        DNA_seq = process_dna_sequence(DNA_seq,name)
+        
+        # Check if optimization was successful before proceeding
         if optresults is None:
-            raise ValueError(f"No optimized codon sequence found for {name}")
-        else:
-            # Prepare restriction enzyme string
-            enzyme_string = "|".join(optresults["restriction_enzymes"])
-            recognition_sites_string = "|".join(optresults["restriction_recognition_sites"])
-            # Generate the novel dataframe
-            df_opt_codon_indiv = {"name": name, "aa_sequence": AA_seq, "codon_sequence": DNA_seq,
-                            "restriction_enzymes": enzyme_string,
-                            "restriction_recognition_sites": recognition_sites_string,
-                            "complexity_score": optresults["complexity_score"],
-                            "NetCharge": charge,
-                            "fasta_header": f"{name}|CDS|{optresults['complexity_score']}|{enzyme_string}|{recognition_sites_string}",
-                            "protein_header": f"{name}|PROT|{len(AA_seq)} aa |{replacements}AA_replacements|NetCharge:{charge}"}
-            df_opt_codon_indiv = pd.DataFrame(df_opt_codon_indiv, index=[0])
-        df_opt_codon_global = pd.concat([df_opt_codon_global,df_opt_codon_indiv])
+            print(f"⚠️ Skipping {name}: No optimized codon sequence found.")
+            continue 
+            
+        DNA_seq = optresults["sequence"]
+
+        # Translation check
+        translated_prot = str(translate_DNA_to_protein(DNA_seq))
+        if translated_prot != str(AA_seq):
+            print(f"⚠️ MISMATCH WARNING: Translation mismatch for {name}. Processing continues...")
+            print(f"Translated: {translated_prot}")
+            print(f"Input: {AA_seq}")
+        
+        print(f"Final:{AA_seq}")
+        DNA_seq = process_dna_sequence(DNA_seq, name)
+
+        # Prepare restriction enzyme strings
+        enzyme_string = "|".join(optresults["restriction_enzymes"])
+        recognition_sites_string = "|".join(optresults["restriction_recognition_sites"])
+        
+        # Generate the individual dictionary
+        df_opt_codon_indiv = {
+            "name": name, 
+            "aa_sequence": AA_seq, 
+            "codon_sequence": DNA_seq,
+            "restriction_enzymes": enzyme_string,
+            "restriction_recognition_sites": recognition_sites_string,
+            "complexity_score": optresults["complexity_score"],
+            "NetCharge": charge,
+            "fasta_header": f"{name}|CDS|{optresults['complexity_score']}|{enzyme_string}|{recognition_sites_string}",
+            "protein_header": f"{name}|PROT|{len(AA_seq)} aa |{replacements} AA_replacements | NetCharge:{charge}"
+        }
+        
+        # Convert dict to DataFrame and append
+        df_opt_codon_indiv = pd.DataFrame([df_opt_codon_indiv])
+        df_opt_codon_global = pd.concat([df_opt_codon_global, df_opt_codon_indiv], ignore_index=True)
     
     # Generate the protein multifasta
-    generate_multifasta(df_opt_codon_global,"protein_header", "aa_sequence",f"{general_output_path}/protein_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
+    generate_multifasta(df_opt_codon_global, "protein_header", "aa_sequence", f"{general_output_path}/protein_sequences.fasta", single_line=fasta_single_line, line_width=fasta_line_length)
+    
     # Generate the DNA multifasta
-    generate_multifasta(df_opt_codon_global,"fasta_header", "codon_sequence",f"{general_output_path}/codon_optimized_DNA_sequences.fasta",single_line=fasta_single_line,line_width=fasta_line_length)
+    generate_multifasta(df_opt_codon_global, "fasta_header", "codon_sequence", f"{general_output_path}/codon_optimized_DNA_sequences.fasta", single_line=fasta_single_line, line_width=fasta_line_length)
+    
     # Save global file as csv
     df_opt_codon_global.to_csv(f"{general_output_path}/codon_optimized_DNA_sequences.csv", index=False)
+    
     return
 
 def generate_DNA_insert_multifasta():

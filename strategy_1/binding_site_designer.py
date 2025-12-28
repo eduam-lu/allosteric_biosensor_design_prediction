@@ -14,6 +14,8 @@ FLAGS
 
 --output:
 
+--ligand_MPNN_only
+
 --help:
 
 WORKFLOW
@@ -24,6 +26,7 @@ Eduardo Amo González
 """
 ### IMPORT MODULES ###########################################################################################################################
 
+from allostery.scripts.ligand_sampling import run_ligand_sampling_pipeline
 import functions_bsd as func
 import argparse
 import pandas
@@ -56,3 +59,18 @@ def save_to_log(message):
     logging.info(message)
 
 ### MAIN EXECUTION ##############################################################################################################################
+
+### Generate new pdbs with the new ligand
+
+### Generate redesign information
+# 1. Define residues to redesign
+# 2. Generate MPNN files
+# 3. Generate contig maps
+### RF Diffusion All Atom
+
+### Ligand MPNN
+
+### High throughput filtering of candidates
+
+### Final filtering and selection of best candidates
+
