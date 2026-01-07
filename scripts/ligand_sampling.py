@@ -303,8 +303,8 @@ def insert_conformers(structure, output):
 ### MAIN PIPELINE FUNCTION ##########################################################################
 
 def run_ligand_sampling_pipeline(ligand_smiles, structure_path, output_path, 
-                          num_conformers=num_conformers, conformer_rmsd_cutoff=0.75, 
-                          num_positions=num_positions, ligand_name=ligand_name):
+                          num_conformers=num_conformers, conformer_rmsd_cutoff=conformer_rmsd_cutoff, 
+                          num_positions=num_positions, ligand_name=ligand_name, translation=translation, rotation=rotation):
     """
     Function to run the full pipeline programmatically.
     """
@@ -337,7 +337,9 @@ def run_ligand_sampling_pipeline(ligand_smiles, structure_path, output_path,
         lowest_energy_conformer, 
         structure_path, 
         num_positions, 
-        output_path
+        output_path,
+        rotation,
+        translation,
     )
 
     ### C. Prepare final pdb files (insert conformer into each position)
@@ -382,5 +384,8 @@ if __name__ == "__main__":
         output_path=args.output,
         num_conformers=args.n_confs,
         num_positions=args.n_pos,
-        ligand_name="Tc" # Keep default or add CLI arg for this
+        ligand_name="Tc", # Keep default or add CLI arg for this
+        translation=translation,
+        rotation=rotation,
+        conformer_rmsd_cutoff=conformer_rmsd_cutoff
     )

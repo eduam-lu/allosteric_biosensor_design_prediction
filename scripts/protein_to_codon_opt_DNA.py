@@ -23,20 +23,20 @@ avoid_restriction_sites = "BsaI" # Include the name of the enzyme to avoid. Must
 remove_aa = [('R','K')] # None or empty list if no changes. If you wanna replace ARG with LYS for example: (R,K)
 limit_cysteine = 1 # float or None. If float, in sequences with more than x cysteines, cysteines will be replaced with serine until the limit is reached.
 
-limit_net_charge = -3.0 # None or float value. If float is given, sequences with net charge above this value will edited to reduce net charge 
+limit_net_charge = -3.0 # Protein sequence net charge.None or float value. If float is given, sequences with net charge above this value will edited to reduce net charge 
 pH = 7.4 # pH at which net charge is calculated
 
 terminal_T= False # True for making the last nucleotide of the sequence to end with T
 
 include_stop_codon= False # Ensures that the sequences in the fasta will start with ATG. IMPORTANT! If false, stop codons will be removed if they are there
 include_start_codon= True # Ensures that the sequences in the fasta will finish with a stop codon. Default TAA
-
-DNA_prefix = "" # The string of nucleotides indicated here will be appended to the beginning of every coding sequence. i.e a restriction site
-DNA_suffix = "" # The string of nucleotides indicated here will be appended to the end of every coding sequence. i.e a restriction site
+ 
+DNA_prefix = "GGCTACGGTCTCGAGGA" # The string of nucleotides indicated here will be appended to the beginning of every coding sequence. i.e a restriction site
+DNA_suffix = "TTCCTGAGACCCATCAT" # The string of nucleotides indicated here will be appended to the end of every coding sequence. i.e a restriction site
+min_DNA_length = 300 # If the final DNA sequence is shorter than this value, random nucleotides will be added to the beginning of the sequence until the length is reached.
 
 fasta_single_line = True # FASTA output will be single line, overrides any line length
 fasta_line_length = 60 # FASTA output will be in lines of this length
-
 ### FUNCTIONS ###################################################################################
 
 # Function to authenticate and get the bearer token
@@ -430,11 +430,77 @@ def process_dna_sequence(seq,name):
         if seq.endswith(("TAA","TAG","TGA")):
             seq = seq[:-3]
     # Add suffix and prefix
-    seq = DNA_prefix + seq + DNA_suffix
-    # If insert mode, apply insert treatment
-    # under development
+    seq = DNA_prefix + seq
 
+    # Perform C termini check and addition
+    # QUICK:
+    # To match the readingframe the T of the c_term flanking sequence has to be either merged into the amino acid
+    # if the amino acid has a T at the 3rd position or else glycine is added
+    # DETAILS:
+    # The c termninus flanking sequence is 17 bp and therefor is not divisible by 3 (16 or 19 is). Therefore we either have to
+    # remove 1 bp to get 16 or add 2 to get 19 so that the reading frame fits. if removing 1 bp, we can merge it into
+    # the flanking sequence. The flanking sequence starts with T so the c terminus codon needs to end with T as well.
+    # If it does not we just add a GLY in there. GLY codon  is GG[A/T/G/C] where in [] anything can be used. Since the
+    # flanking sequence starts with T we just add GG, so it become GGT. Also GGT is used 48% of the time in E coli:
+    # https://bmcbiotechnol.biomedcentral.com/articles/10.1186/1472-6750-9-36. SEE TABLE 3.
+
+    if DNA_suffix:
+        if sequence[-1] == "T":
+            sequence = sequence[:-1]
+            sequence += DNA_suffix
+        else:
+            sequence += "GG" + DNA_suffix
+    # Add random padding if needed
+    if min_DNA_length is not None:
+        while len(seq) < min_DNA_length:
+            random_nt = random.choice(['A', 'T', 'C', 'G'])
+            seq = random_nt + seq 
     return seq
+
+def generate_96_well_map():
+    """Generates a list ['A1', 'A2', ... 'H12']"""
+    rows = list("ABCDEFGH")
+    wells = []
+    for r in rows:
+        for c in range(1, 13):
+            wells.append(f"{r}{c}")
+    return wells
+
+    
+def fasta_to_xlsx_plate(fasta_file, excel_file):
+    # 1. Get Data
+    seq_data = parse_fasta(fasta_file)
+    well_map = generate_96_well_map()
+    
+    # 2. Map sequences to wells
+    final_data = []
+    
+    for i, (header, sequence) in enumerate(seq_data):
+        # Calculate well index (0-95). 
+        # The % 96 ensures that if you have >96 sequences, it restarts at A1.
+        well_index = i % 96
+        well_position = well_map[well_index]
+
+        sequence = process_sequence(sequence)
+
+        final_data.append({
+            "Well Position": well_position,
+            "Header": header,
+            "Sequence": sequence
+        })
+
+    # 3. Create DataFrame and Save
+    df = pd.DataFrame(final_data)
+    
+    # Reorder columns explicitly to match your request
+    df = df[["Well Position", "Header", "Sequence"]]
+    
+    try:
+        df.to_excel(excel_file, index=False)
+        print(f"Success! Processed {len(seq_data)} sequences.")
+        print(f"Saved to: {excel_file}")
+    except PermissionError:
+        print(f"Error: Could not write to {excel_file}. Make sure the file is closed.")
 
 def generate_DNA_cds_multifasta(sequence_df, general_output_path):
     # Initialise DNA df
