@@ -63,16 +63,16 @@ user_defined_active_site = None  # If provided, this list of residues will be us
 user_defined_residues = None  # If provided, the program ensures this list of residues are included in the active site
 
 ### Redesign conditions params
+
 ligand_MPNN_only = False  # If true, only the ligandMPNN step will be performed, skipping RF diffusion
-RF_model = "RF1"  # RF diffusion model to use: "all_atom", "RF1", "RF3"
+RF_model = "all_atom"  # RF diffusion model to use: "all_atom", "RF1", "RF3"
+
 # RF redesign conditions
 consertative_redesign = False  # If true,residues within a secondary structure element will not be redesigned. Except if they are the first of final residue of the element.
 segment_extension = 1  # Number of residues to extend the redesign segment on each side
 n_termini_extension = 1  # Number of residues to extend the redesign segment at the N-terminus
 c_termini_extension = None  # Number of residues to extend the redesign segment at the C-terminus. If None, it will extend to the end of the chain.
 user_defined_contig_map = None  # If provided, this contig map will be used for RF diffusion redesign instead of calculating one based on the structure
-
-# Ligand MPNN redesign conditions
 
 
 ### RF diffusion execution params
@@ -87,8 +87,33 @@ num_designs = 1  # Number of designs to generate with RF diffusion
 T = 50  # Number of diffusion steps to use in RF diffusion
 RFAA_ligand_name = "UNL"  # Name of the ligand to be used in
 design_startnum = 1  # Starting number for design numbering
-deterministic = True  # If true, RF diffusion will run in deterministic mode for reproduc
+deterministic = True  # If true, RF diffusion will run in deterministic mode for reproducibility
 
+### Ligand MPNN execution params
+path_to_ligand_MPNN_script= "/home/eduardo/LigandMPNN/run.py"  # Path to the Ligand MPNN script 
+path_to_ligand_MPNN_env= "/home/eduardo/miniforge3/envs/ligandmpnn_env"  # Path to the environment needed to use Ligand MPNN
+mpnn_model_type= "ligand_mpnn"  # Type of Ligand MPNN model to use: "base" or "large" 
+path_to_mpnn_model = "/home/eduardo/LigandMPNN/model_params/ligandmpnn_v_32_010_25.pt"
+
+MPNN_num_designs = 10  # Number of designs to generate with Ligand MPNN per input structure
+n_batches = 1  # Number of batches to split the MPNN designs into
+mpnn_temperature= 0.05  # Sampling temperature for Ligand MPNN 
+bias_aa_global= None  # Global amino acid bias for Ligand MPNN
+omit_aa_global= None  # Global amino acids to omit for Ligand MPNN
+side_chain_context = 0  # 0 or 1, Ligand MPNN will use side chain context information during design
+first_shell_only = False  # If true, only residues in the first shell will be redesigned by Ligand MPNN
+
+user_defined_mpnn_redesign = None  # If provided, this list of residues will be used as the redesign list for Ligand MPNN
+
+top_n_mpnn_candidates= 5
+
+### 1D filtering
+filter_1d_window_size = 10
+filter_1d_treshold = 10
+
+### ESM
+path_to_ESM_env='/home/eduardo/miniforge3/envs/esm_fold_env'
+path_to_ESM_script='/home/eduardo/allostery/strategy_1/esm_high_throughput.py'
 ### INPUT CHECK ###############################################################################################################################
 
 parser = argparse.ArgumentParser(
@@ -144,7 +169,7 @@ with open(f"{args.output}/pdb_info.json", "w") as f:
 
 # Generate contig map info
 
-contig_map = func.list_to_contig_map(
+contig_map,segments = func.list_to_contig_map(
     chain_id = pdb_info["chain_id"],
     seq_length= pdb_info["sequence_length"],
     start = pdb_info["start_residue_number"],
@@ -160,9 +185,8 @@ contig_map = func.list_to_contig_map(
 
 print(contig_map)
 pdb_info["contig_map"] = contig_map
+pdb_info["redesign_segments"] = segments
 
-# Generate MPNN redesign info
-func.list_to_MPNN_json()
 
 ### RF Diffusion module
 
@@ -187,10 +211,19 @@ if not ligand_MPNN_only:
                     design_startnum=design_startnum,
                     deterministic=deterministic
                 )
+            func.move_pdbs_to_folder(
+                input_folder=f"{args.output}/RFallatom_designs",
+                output_folder=f"{args.output}/RF_final_pdbs")
     elif RF_model == "RF3":
-        print("Running RF3 redesign...")
-        for pdb_file in Path(f"{args.output}/ligand_sampling/final_pdbs").glob("*.pdb"):
-            func.run_rf3()
+        if os.path.exists(f"{args.output}/RF3_designs") and os.listdir(f"{args.output}/RF3_designs"):
+            print(f"RF3 designs already exist in {args.output}/RF3_designs. Skipping RF3 execution.")
+        else:
+            print("Running RF3 redesign...")
+            for pdb_file in Path(f"{args.output}/ligand_sampling/final_pdbs").glob("*.pdb"):
+                func.run_rf3()
+            func.move_pdbs_to_folder(
+                input_folder=f"{args.output}/RF3_designs",
+                output_folder=f"{args.output}/RF_final_pdbs")
     elif RF_model == "RF1":
         print("Running RF1 redesign...")
         # Skip if output already exists and is not empty
@@ -207,13 +240,77 @@ if not ligand_MPNN_only:
                     path_to_RF1_script= path_to_RF1_script,
                     path_to_RF1_env=path_to_RF1_env
                 )
+            func.move_pdbs_to_folder(
+                input_folder=f"{args.output}/RF1_designs",
+                output_folder=f"{args.output}/RF_final_pdbs")
     else:
         print("Invalid RF diffusion model specified. Choose either 'all_atom', 'RF1', or 'RF3'.")
         sys.exit(1)
 
+
+
 ### Ligand MPNN
 
-### High throughput filtering of candidates
+# Generate JSONS
+
+if ligand_MPNN_only:
+    mpnn_pdb_folder = f"{args.output}/ligand_sampling/final_pdbs"
+else:
+    mpnn_pdb_folder = f"{args.output}/RF_final_pdbs"
+
+mpnn_output_folder = f"{args.output}/MPNN_designs"
+mpnn_json_path = f"{mpnn_output_folder}/MPNN_jsons"
+Path(mpnn_json_path).mkdir(parents=True, exist_ok=True)
+
+func.generate_MPNN_jsons(pdb_folder= mpnn_pdb_folder, 
+                         output_json = mpnn_json_path,
+                         user_redesign_list = user_defined_mpnn_redesign, 
+                         first_shell = pdb_info["first_shell"], 
+                         chain_id = pdb_info["chain_id"], 
+                         original_seq = pdb_info["sequence_seqres"],
+                         segments=pdb_info["redesign_segments"],
+                         start_position= pdb_info["start_residue_number"],
+                         first_shell_only = first_shell_only)
+
+# Run ligand MPNN
+
+func.run_ligand_MPNN(output_folder= mpnn_output_folder,
+                    num_designs = MPNN_num_designs, 
+                    n_batches = n_batches, 
+                    path_to_ligand_MPNN_script = path_to_ligand_MPNN_script, 
+                    path_to_ligand_MPNN_env = path_to_ligand_MPNN_env,
+                    json_path = mpnn_json_path,
+                    model_type = mpnn_model_type, 
+                    temperature = mpnn_temperature, 
+                    bias_aa_global = bias_aa_global, 
+                    omit_aa_global = omit_aa_global, 
+                    side_chain_context = side_chain_context,
+                    model_path=path_to_mpnn_model)
+
+# Generate MPNN dataframe
+
+MPNN_df = func.process_MPNN_folder(
+    folder = f"{args.output}/MPNN_designs/seqs",
+    top_n = top_n_mpnn_candidates
+)
+print(MPNN_df.head(5))
+
+### High throughput filtering of candidates #########################################################
+
+### 1D filter
+# Polyalanine filter
+MPNN_df = func.filter_dataframe_1D(MPNN_df,window_size=filter_1d_window_size,threshold=filter_1d_treshold, seq_col='seq',aa ='A')
+# Polyglutamate filter
+MPNN_df = func.filter_dataframe_1D(MPNN_df,window_size=filter_1d_window_size,threshold=filter_1d_treshold, seq_col='seq',aa ='E')
+
+MPNN_df.to_csv(f'{args.output}/MPNN_df.csv')
+### High throughput structure prediction with ESM fold
+func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',path_to_ESM_env=path_to_ESM_env,path_to_ESM_script=path_to_ESM_script)
+### First 3D filter (3D quality)
+
+### Chai prediction 
+
+### Second 3D filter (3D quality and pocket metrics)
 
 ### Final filtering and selection of best candidates
 

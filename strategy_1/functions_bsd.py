@@ -8,9 +8,12 @@ import json
 from Bio import PDB
 from Bio.PDB import PDBParser, DSSP
 from Bio.SeqUtils import seq1
+import pandas as pd
+import re
 from pymol import cmd 
 from pathlib import Path
 import subprocess
+import numpy as np
 
 ### PDB INFO EXTRACTION ###########################################################################################################################
 
@@ -126,7 +129,7 @@ def extract_sequence(pdb_path, chain_id='A'):
         start_residue_number = None  # All residues are missing
 
     return {
-        "pdb_id": pdb_path.split('/')[-1].split('.')[0],
+        "pdb_id": str(pdb_path).split('/')[-1].split('.')[0],
         "seqres": seqres,
         "coordinate_sequence": coord_seq,
         "residue_count": len(coord_seq),
@@ -347,7 +350,7 @@ def list_to_contig_map(chain_id, seq_length, active_site, missing_residues, star
     else:
         elements.append(rf"{c_termini_extension}-{c_termini_extension}\']")
     contig_map = ",".join(elements)
-    return contig_map
+    return contig_map,segments
 
 
 def define_conservative_segments(active_site, DSSP_string):
@@ -381,24 +384,8 @@ def define_aggresive_segments(active_site):
 
     return segments
 
-def list_to_MPNN_json():
 
-    return
 
-def json_generator(data_dict, output_dir,phase_change):
-    """
-    Write one .jsonl file per entry in the dictionary.
-
-    Each file will be named <key>.jsonl and contain a single line like:
-    {"<key>": {"A": [list of values]}}
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    for key, value in data_dict.items():
-        json_data = {key.split(".")[0]: {"A": [x - phase_change for x in value]}}
-        output_path = os.path.join(output_dir, f"{key}.jsonl")
-        with open(output_path, "w") as f:
-            f.write(json.dumps(json_data) + "\n")
 
 ### RF diffusion ###############################################################################################################################    
 
@@ -477,12 +464,284 @@ def run_rf3():
         return
     
     return
+
 ### LIGAND MPNN #######################################################################################################################################
+
+def generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A'):
+    """
+    Identifies all positions in an RFdiffusion PDB that are NOT part of the 
+    fixed segments (motifs). These positions are targets for LigandMPNN.
+    """
+    pdb_seq = extract_sequence(str(pdb_file))["coordinate_sequence"]
+    
+    # 1. Extract the sequences of the fixed motifs from the original
+    fixed_motif_seqs = []
+    start = start_position
+    for seg_start, seg_length in segments:
+        # Convert 1-based start to 0-based index
+        fixed_motif_seqs.append(original_seq[start-1:seg_start-1])
+        start = seg_start + seg_length
+    fixed_motif_seqs.append(original_seq[start-1:])
+
+
+    # 2. Create a mask for the PDB sequence (False = Redesign, True = Fixed)
+    # We initialize everything as False (to be redesigned)
+    fixed_mask = [False] * len(pdb_seq)
+    
+    current_search_index = 0
+    
+    # 3. Find each fixed motif in the PDB sequence sequentially
+    print(fixed_motif_seqs)
+    for motif in fixed_motif_seqs:
+        print(motif)
+        # Find the motif starting from the end of the previous found motif
+        found_index = pdb_seq.find(motif, current_search_index)
+        
+        if found_index == -1:
+            # Critical Error: RFdiffusion failed to preserve a fixed segment
+            raise ValueError(f"Fixed segment '{motif}' lost in PDB sequence!")
+        
+        # Mark these residues as Fixed (True)
+        for i in range(found_index, found_index + len(motif)):
+            fixed_mask[i] = True
+            
+        # Update search start to ensure we look *after* this motif for the next one
+        current_search_index = found_index + len(motif)
+
+    # 4. Generate the redesign string for everything NOT masked as fixed
+    redesign_list = []
+    for i, is_fixed in enumerate(fixed_mask):
+        if not is_fixed:
+            # Calculate PDB residue number
+            res_num = start_position + i
+            redesign_list.append(f"{chain_id}{res_num}")
+            redesign_string = " ".join(redesign_list)
+
+    return redesign_string
+
+def generate_MPNN_jsons(pdb_folder, output_json,
+                                    user_redesign_list, first_shell, chain_id, original_seq,segments, start_position,
+                                    first_shell_only=True):
+    
+    # If output already exists and is not empty skip this function
+    if os.path.exists(output_json) and any(os.scandir(output_json)) > 0 :
+        print(f"MPNN JSON files already exists at {output_json}. Skipping generation.")
+        return
+    
+    # Create output directory if it doesn't exist
+    Path(output_json).mkdir(parents=True, exist_ok=True)
+    
+    # If first shell, generate the list for first shell
+    if first_shell_only:
+        first_shell_list = [f'{chain_id}{res}'for res in first_shell]
+        first_shell_string = " ".join(first_shell_list)
+    
+    # Parse the pdb folder and generate json with pdb paths
+    pdb_files = list(Path(pdb_folder).glob("*.pdb"))
+
+    data_dict = {}
+    redesigned_residues_dict = {}
+
+    for pdb_file in pdb_files:
+
+        # multi pdb
+        data_dict[str(pdb_file)] = ""
+
+        # multiredesigns
+        if first_shell_only:
+            redesigned_residues_dict[str(pdb_file)] = first_shell_list
+        else:
+            redesigned_residues_dict[str(pdb_file)] = generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A')
+
+    # Generate json files
+    json.dump(data_dict, open(f"{output_json}/pdb_paths_multi.json", "w"))
+    json.dump(redesigned_residues_dict, open(f"{output_json}/redesigned_residues_multi.json", "w"))
+    return
+
+def run_ligand_MPNN(output_folder, num_designs, n_batches, path_to_ligand_MPNN_script, path_to_ligand_MPNN_env,json_path,
+                    model_type, temperature, bias_aa_global, omit_aa_global, side_chain_context,model_path):
+    
+    # Check if output already exists and is not empty
+    if os.path.exists(output_folder) and any(f.name.endswith('seqs') for f in os.scandir(output_folder)):
+        print(f"MPNN designs already exists at {output_folder}. Skipping generation.")
+        return
+    
+    # Prepare ligand MPNN command
+    ligand_MPNN_command = (
+        f'conda run -p {path_to_ligand_MPNN_env} python '
+        f' {path_to_ligand_MPNN_script} '
+        f'--pdb_path_multi {json_path}/pdb_paths_multi.json '
+        f'--out_folder {output_folder} '
+        f'--save_stats 1 '
+        f'--batch_size {num_designs} '
+        f'--number_of_batches {n_batches} '
+        f'--model_type {model_type} '
+        f'--checkpoint_ligand_mpnn {model_path} '
+        f'--temperature {temperature} '
+        f'--ligand_mpnn_use_side_chain_context {side_chain_context} '
+        f'--redesigned_residues_multi "{json_path}/redesigned_residues_multi.json" '
+    )
+
+    # Append global bias if given
+    if omit_aa_global:
+        ligand_MPNN_command += f'--omit_AA {omit_aa_global} '
+
+    # Append global bias if given
+    if bias_aa_global:
+        ligand_MPNN_command += f'--bias_AA {bias_aa_global}  '
+
+    # Append fixed residues if the file exists
+    fixed_residues_file = os.path.join(json_path, "fix_residues_multi.json")
+    if os.path.exists(fixed_residues_file):
+        ligand_MPNN_command += f'--fixed_residues_multi "{fixed_residues_file}" '
+    
+    # Append multi omit AA per residue if the file exists
+    omit_AA_per_residue_multi_file = os.path.join(json_path, "omit_AA_per_residue_multi.json")
+    if os.path.exists(omit_AA_per_residue_multi_file):
+        ligand_MPNN_command += f'--omit_AA_per_residue_multi "{omit_AA_per_residue_multi_file}" '
+    
+    # Append multi bias AA per residue if the file exists
+    bias_AA_per_residue_multi_file = os.path.join(json_path, "bias_AA_per_residue_multi.json")
+    if os.path.exists(bias_AA_per_residue_multi_file):
+        ligand_MPNN_command += f'--bias_AA_per_residue_multi "{bias_AA_per_residue_multi_file}" '
+
+    subprocess.run(ligand_MPNN_command, shell=True)
+
+    return
+
+def process_MPNN_folder(folder,top_n):
+
+    folder = Path(folder)
+
+    sequence_df = pd.DataFrame(columns=["file_ID", "seq", "overall_MPNN_score", "ligand_MPNN_score", "avg_MPNN_score"]) 
+    for file in folder.iterdir():
+        file_df = process_MPNN_file(file,top_n)
+        sequence_df = pd.concat([sequence_df, file_df], ignore_index = True)
+
+    return sequence_df
+
+def process_MPNN_file(file, top_n, select_by='avg_MPNN_score'):
+    """Process a single MPNN output file.
+
+    Skips the first header+sequence entry (original sequence) and computes
+    an average MPNN score combining overall and ligand confidences.
+    """
+    # Read headers and sequences
+    headers = []
+    sequences = []
+    with open(file, "r") as faa_file:
+        for line in faa_file:
+            if line.startswith(">"):
+                headers.append(line.strip())
+            else:
+                sequences.append(line.strip())
+
+    # Parse scores from headers
+    overall_scores = []
+    ligand_scores = []
+    for h in headers:
+        m_overall = re.search(r"overall_confidence=([\d.]+)", h)
+        m_lig = re.search(r"ligand_confidence=([\d.]+)", h)
+        overall_scores.append(float(m_overall.group(1)) if m_overall else np.nan)
+        ligand_scores.append(float(m_lig.group(1)) if m_lig else np.nan)
+
+    # If the file contains at least one original entry, drop the first header/sequence
+    if len(sequences) > 0:
+        # remove first entry (original sequence) from lists if present
+        headers = headers[1:]
+        sequences = sequences[1:]
+        overall_scores = overall_scores[1:]
+        ligand_scores = ligand_scores[1:]
+
+    # Store as a dataframe
+    sequence_df = pd.DataFrame(columns=["file_ID", "seq", "overall_MPNN_score", "ligand_MPNN_score", "avg_MPNN_score"]) 
+    file_name = str(file.name)
+    # Remove common extension if present (e.g., .fa)
+    if file_name.lower().endswith('.fa'):
+        file_name = file_name[:-3]
+    elif file_name.lower().endswith('.fasta'):
+        file_name = file_name[:-6]
+
+    for idx, seq in enumerate(sequences, start=1):
+        entry_name = f"{file_name}_seq_{idx}"
+        overall = overall_scores[idx-1] if idx-1 < len(overall_scores) else np.nan
+        ligand = ligand_scores[idx-1] if idx-1 < len(ligand_scores) else np.nan
+        # Compute average (ignore NaNs when possible)
+        avg = float(np.nanmean([overall, ligand])) if (not np.isnan(overall) or not np.isnan(ligand)) else np.nan
+        row = pd.Series([entry_name, seq, overall, ligand, avg], index=["file_ID", "seq", "overall_MPNN_score", "ligand_MPNN_score", "avg_MPNN_score"])
+        sequence_df.loc[len(sequence_df)] = row
+
+    # Sort by desired metric (descending) and keep top N
+    if select_by not in sequence_df.columns:
+        select_by = 'avg_MPNN_score'
+    top_df = sequence_df.sort_values(by=select_by, ascending=False).head(top_n).reset_index(drop=True)
+
+    return top_df
 
 ### Folding models ###############################################################################################################################
 
+def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script):
+    # 1. Convert to Path object first
+    out_path = Path(output_folder)
+
+    # 2. Check using .is_dir() (safer than .exists) and .iterdir()
+    if out_path.is_dir() and any(out_path.iterdir()):
+        print(f"ESM predictions already exists at {output_folder}. Skipping generation.")
+        return
+    
+    # Prepare command for running the ESM script
+    ESM_command = (
+        f'conda run -p {path_to_ESM_env} python3 -u {path_to_ESM_script} --input_csv {input_csv} --output_folder {output_folder}'
+    )
+    subprocess.run(ESM_command, shell=True, check=True)
+    return
+
 ### 3D FILTERING #######################################################################################################################################
+
+def sliding_window_1D_filter(seq, window_size, threshold, aa='A'):
+    if len(seq) < window_size:
+        return seq.count(aa) >= threshold
+    for i in range(len(seq) - window_size + 1):
+        window = seq[i : i + window_size]
+        if window.count(aa) >= threshold:
+            return True 
+    return False
+
+def filter_dataframe_1D(df, window_size, threshold, seq_col='seq', aa= 'A'):
+    """
+    Removes rows from the DataFrame where the sequence contains 
+    too many Alanines in any sliding window.
+
+    Args:
+        df (pd.DataFrame): Input dataframe.
+        window_size (int): Size of the window (y).
+        threshold (int): Max allowed Alanines in a window (x).
+        seq_col (str): The name of the sequence column. Defaults to 'seq'.
+        
+    Returns:
+        pd.DataFrame: A filtered copy of the dataframe.
+    """
+    # Create a mask: True if the sequence HAS the bad region
+    # We use a lambda to pass the extra arguments to your function
+    mask = df[seq_col].apply(lambda s: sliding_window_1D_filter(s, window_size, threshold,aa))
+    
+    # We keep the rows where the mask is False (using the bitwise NOT operator ~)
+    df_filtered = df[~mask].copy()
+    
+    return df_filtered
+
 
 ### BINDING AND POCKET METRICS ###############################################################################################################################
 
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
+def move_pdbs_to_folder(input_folder, output_folder):
+    """
+    Moves all PDB files from pdb_folder to output_folder.
+    """
+    # Create output folder if it doesn't exist
+    Path(output_folder).mkdir(parents=True, exist_ok=True)
+    
+    # Move each PDB file
+    for pdb_file in Path(input_folder).glob("*.pdb"):
+        new_path = Path(output_folder) / pdb_file.name
+        pdb_file.rename(new_path)
