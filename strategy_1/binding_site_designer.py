@@ -35,7 +35,7 @@ Eduardo Amo González
 from ligand_sampling import run_ligand_sampling_pipeline
 import functions_bsd as func
 import argparse
-import pandas
+import pandas as pd
 import json
 from pathlib import Path
 import sys
@@ -45,7 +45,7 @@ import logging
 ### PARAMS ####################################################################################################################################
 
 ### Ligand sampling params
-ligand_smiles = "CC1=CC=CC=C1"  # SMILES string of the ligand to be sampled
+ligand_smiles = "C[C@@]1([C@H]2C[C@H]3[C@@H](C(=O)C(=C([C@]3(C(=O)C2=C(C4=C1C=CC=C4O)O)O)O)C(=O)N)N(C)C)O"  # SMILES string of the ligand to be sampled
 ligand_name = "Tc"  # Name of the ligand (used in PDB files)
 
 num_conformers = 2  # Number of conformers to generate for the ligand
@@ -107,13 +107,35 @@ user_defined_mpnn_redesign = None  # If provided, this list of residues will be 
 
 top_n_mpnn_candidates= 5
 
+### ESM
+path_to_ESM_env='/home/eduardo/miniforge3/envs/esm_fold_env'
+path_to_ESM_script='/home/eduardo/allostery/strategy_1/esm_high_throughput.py'
+
 ### 1D filtering
 filter_1d_window_size = 10
 filter_1d_treshold = 10
 
-### ESM
-path_to_ESM_env='/home/eduardo/miniforge3/envs/esm_fold_env'
-path_to_ESM_script='/home/eduardo/allostery/strategy_1/esm_high_throughput.py'
+### First 3D filtering
+clash_distance = 2.0
+bond_distance = 1.2
+MIN_PLDDT_1 = 0.8
+MIN_RMSD_1 = 0.5
+MAX_RMSD_1 = 10
+MAX_CLASHES_1 = 1.01
+global_score_weights = {"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2}
+top_n_score_ESM = 10
+top_n_gnina_ESM = 9
+
+### ESM GNINA
+gnina_path="gnina"
+gnina_cnn="crossdock_default2018"
+gnina_exhaustiveness=8
+gnina_autobox_add=4
+
+### Second prediction round
+model_flag="CHAI"  # "CHAI" or "AF3"
+msa_flag=False  # If true, MSAs will be used during prediction
+
 ### INPUT CHECK ###############################################################################################################################
 
 parser = argparse.ArgumentParser(
@@ -144,7 +166,7 @@ def save_to_log(message):
 
 ### Generate new pdbs with the new ligand
 
-run_ligand_sampling_pipeline(
+lowest_energy_conformer =run_ligand_sampling_pipeline(
         ligand_smiles=args.ligand,
         structure_path=args.structure,
         output_path=f"{args.output}/ligand_sampling",
@@ -305,10 +327,22 @@ MPNN_df = func.filter_dataframe_1D(MPNN_df,window_size=filter_1d_window_size,thr
 
 MPNN_df.to_csv(f'{args.output}/MPNN_df.csv')
 ### High throughput structure prediction with ESM fold
+
 func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',path_to_ESM_env=path_to_ESM_env,path_to_ESM_script=path_to_ESM_script)
+
 ### First 3D filter (3D quality)
 
-### Chai prediction 
+ESM_df = func.threed_params_1_df(folder=f'{args.output}/ESM_predictions/', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+                                 ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
+                                 output_folder=f"{args.output}",
+                                 gnina_path=gnina_path,
+                                 cnn=gnina_cnn, 
+                                 exhaustiveness=gnina_exhaustiveness, 
+                                 autobox_add=gnina_autobox_add)
+ESM_df = func.threed_filter_1_df(ESM_df, output_folder=f"{args.output}", weights=global_score_weights, min_plddt=MIN_PLDDT_1, min_rmsd=MIN_RMSD_1, max_rmsd=MAX_RMSD_1, max_clashes=MAX_CLASHES_1, top_n_score=top_n_score_ESM,top_n_gnina=top_n_gnina_ESM)
+ESM_df.to_csv(f'{args.output}/ESM_filtered_df.csv')
+### Chai/AF prediction 
+func.second_prediction_round(ESM_df, output_path=f"{args.output}/{model_flag}_prediction",ligand_smiles="C[C@@]1([C@H]2C[C@H]3[C@@H](C(=O)C(=C([C@]3(C(=O)C2=C(C4=C1C=CC=C4O)O)O)O)C(=O)N)N(C)C)O", model_flag=model_flag, MSA_flag=msa_flag)
 
 ### Second 3D filter (3D quality and pocket metrics)
 

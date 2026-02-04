@@ -4,16 +4,25 @@ Functions for running the script binding_site_designer.py
 
 import warnings
 import os
+import sys
 import json
 from Bio import PDB
-from Bio.PDB import PDBParser, DSSP
+from Bio.PDB import PDBParser, DSSP, NeighborSearch
 from Bio.SeqUtils import seq1
+
+import biotite.structure as struc
+import biotite.structure.io as bsio
+from biotite.structure.io import load_structure
+import numpy as np
+from tmtools import tm_align
+
 import pandas as pd
 import re
 from pymol import cmd 
 from pathlib import Path
 import subprocess
-import numpy as np
+
+
 
 ### PDB INFO EXTRACTION ###########################################################################################################################
 
@@ -696,6 +705,401 @@ def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script):
     subprocess.run(ESM_command, shell=True, check=True)
     return
 
+def compute_msa():
+    return
+
+def AF_json_generator_wo_MSA(row, json_path):
+    file_name = row['file_ID']
+    seq = row['sequence']
+
+    json_data = {
+        "name": f"{file_name}",
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": seq,
+                    "unpairedMsa": f">dummy\n{seq}\n",  
+                    "pairedMsa": "",                    
+                    "templates": []
+                }
+            }
+        ],
+        "modelSeeds": [1],
+        "dialect": "alphafold3",
+        "version": 1
+    }
+
+    with open(f"{json_path}/temp.json", "w") as f:
+        json.dump(json_data, f, indent=2)
+
+def AF_json_generator_w_MSA(row, json_path):
+    return
+
+def AF_json_generator_cofold(row,ligand_SMILES, json_path):
+    file_name = row['file_ID']
+    seq = row['sequence']
+    partial_T = row['partial_T']
+
+    json_data = {
+        "name": f"{file_name}",
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": seq,
+                    "unpairedMsa": f">dummy\n{seq}\n",  
+                    "pairedMsa": "",                    
+                    "templates": []
+                }
+            },
+            {
+                "ligand": {
+                    "id": "L",
+                    "smiles": ligand_SMILES
+                }
+            }
+        ],
+        "modelSeeds": [1],
+        "dialect": "alphafold3",
+        "version": 1
+    }
+
+    with open(f"{json_path}/temp.json", "w") as f:
+        json.dump(json_data, f, indent=2)
+    return
+
+def run_AlphaFold3(row, output_path,msa_flag=False):
+    # Create temporary JSON file
+    if msa_flag:
+        AF_json_generator_w_MSA(row, output_path)
+    else:
+        AF_json_generator_wo_MSA(row, output_path)
+    # Run AF3
+    af_command = (
+    f"conda run -p /home/ingemar/anaconda3/envs/alphafold3 python /mnt/data/alphafold3/run_alphafold.py "
+    f"--json_path={output_path}/temp.json "
+    f"--output_dir={output_path} "
+    f"--db_dir=/mnt/data/alphafold3/alphafold_databases/ "
+    f"--model_dir=/mnt/data/alphafold3/models/ "
+    f"--num_diffusion_samples=1"
+    )
+    af_process = subprocess.run(af_command, shell = True, text=True)
+
+def run_chai(row, output_path):
+    # Ensure output path exists
+    Path(output_path).mkdir(parents=True, exist_ok=True)
+    # 
+    sequence = row['sequence']
+    file_name = row['file_ID']
+    # Create the full path for the temporary FASTA file
+    fasta_path = f"{output_path}/temp.fa"
+
+    # Write the sequence to the FASTA file
+    with open(fasta_path, 'w') as f:
+        f.write(f">protein|{file_name}\n")      # Header line
+        f.write(f"{sequence}\n")         # The actual sequence
+    # Run chai
+    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_process = subprocess.run(chai_command, shell=True)
+
+    return 
+
+def run_chai_w_MSA(row, output_path):
+    #
+    Path(output_path).mkdir(parents=True, exist_ok=True)
+    #
+    sequence = row['sequence']
+    file_name = row['file_ID']
+    # Create the full path for the temporary FASTA file
+    fasta_path = f"{output_path}/temp.fa"
+
+    # Write the sequence to the FASTA file
+    with open(fasta_path, 'w') as f:
+        f.write(f">protein|{file_name}\n")      # Header line
+        f.write(f"{sequence}\n")         # The actual sequence
+    # Run chai
+    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_process = subprocess.run(chai_command, shell=True)
+
+    return 
+
+def run_chai_cofold(row, output_path,ligand_smiles):
+    #
+    Path(f"{output_path}_cofold").mkdir(parents=True, exist_ok=True)
+    #
+    sequence = row['sequence']
+    file_name = row['file_ID']
+    # Create the full path for the temporary FASTA file
+    fasta_path = f"{output_path}_cofold/temp.fa"
+
+    # Write the sequence to the FASTA file
+    with open(fasta_path, 'w') as f:
+        f.write(f">protein|{file_name}\n")      # Header line
+        f.write(f"{sequence}\n")         # The actual sequence
+        f.write(f">ligand|{file_name}\n")      # Header line
+        f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
+    # Run chai
+    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_process = subprocess.run(chai_command, shell=True)
+
+    return 
+
+def run_chai_cofold_w_MSA(row, output_path,ligand_smiles):
+    #
+    Path(f"{output_path}_cofold").mkdir(parents=True, exist_ok=True)
+    #
+    sequence = row['sequence']
+    file_name = row['file_ID']
+    # Create the full path for the temporary FASTA file
+    fasta_path = f"{output_path}_cofold/temp.fa"
+
+    # Write the sequence to the FASTA file
+    with open(fasta_path, 'w') as f:
+        f.write(f">protein|{file_name}\n")      # Header line
+        f.write(f"{sequence}\n")         # The actual sequence
+        f.write(f">ligand|{file_name}\n")      # Header line
+        f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
+    # Run chai
+    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_process = subprocess.run(chai_command, shell=True)
+
+    return 
+
+def second_prediction_round(df,model_flag,MSA_flag,ligand_smiles, output_path):
+    if model_flag not in ['AF3','CHAI']:
+        print("Error: Model flag must be either 'AF3' or 'CHAI'")
+        sys.exit(1)
+    for index, row in df.iterrows():
+        if model_flag == 'AF3':
+            if MSA_flag:
+                run_AlphaFold3(row, output_path, msa_flag=True)
+            else:
+                run_AlphaFold3(row, output_path, msa_flag=False)
+        elif model_flag == 'CHAI':
+            if ligand_smiles:
+                if MSA_flag:
+                    run_chai_cofold_w_MSA(row, output_path, ligand_smiles)
+                else:
+                    run_chai_cofold(row, output_path, ligand_smiles)
+            else:
+                if MSA_flag:
+                    run_chai_w_MSA(row, output_path)
+                else:
+                    run_chai(row, output_path)
+                    
+    if model_flag=="AF3":
+        process_AF3_folder(output_path)
+    if model_flag=="CHAI":
+        process_chai_folder(output_path)
+    return
+### PROTEIN METRICS #########################################################################################################################################
+
+
+def extract_plddt(file_path):
+    """
+    Extracts the mean and standard deviation of pLDDT scores 
+    from a structure file using Biotite.
+    """
+    try:
+        # FIX: Explicitly ask for 'b_factor' using extra_fields
+        struct = bsio.load_structure(file_path, extra_fields=["b_factor"])
+        
+        # Check if b_factor data was successfully loaded
+        if not hasattr(struct, "b_factor"):
+            # Fallback: Sometimes PDB parsers attach it to 'occupancy' by mistake 
+            # if columns are misaligned, but usually it's just missing from the load.
+            print(f"Warning: 'b_factor' column could not be loaded from {file_path}")
+            return 0.0, 0.0
+            
+        # Extract the array of pLDDT scores
+        plddt_values = struct.b_factor
+        
+        # Return Mean and Stdev
+        return np.mean(plddt_values), np.std(plddt_values)
+
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return 0.0, 0.0
+
+
+
+# Define the dictionary at the module level for efficiency
+THREE_TO_ONE_MAP = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
+}
+
+def three_to_one(res_names):
+    """
+    Converts a list or array of 3-letter residue codes to a single 1-letter string.
+    Handles non-standard residues by mapping them to 'X'.
+    """
+    # Use .get() to return 'X' for any residue not in the dictionary
+    return "".join([THREE_TO_ONE_MAP.get(res, 'X') for res in res_names])
+
+def get_coords(pdb_path):
+    """
+    Helper to get (N, 3) coordinates of CA atoms and the sequence string.
+    Ensures coordinates are float64 and sequence is a string.
+    """
+    struct = load_structure(pdb_path)
+    
+    # Filter for Alpha Carbons only
+    ca = struct[struct.atom_name == "CA"]
+    
+    # Explicitly cast to float64 for tm_align compatibility
+    coords_64 = ca.coord.astype(np.float64)
+    
+    # Convert 3-letter code array to single string
+    seq_str = three_to_one(ca.res_name)
+    
+    return coords_64, seq_str
+
+def batch_tm_align(target_path, design_path):
+    # 1. Load Target Coords
+    target_coords, target_seq = get_coords(target_path)
+    
+    results = []
+    
+    mobile_coords, mobile_seq = get_coords(design_path)
+    
+    # 2. Run TM-align
+    # output is a specialized object containing score and rotation matrix
+    res = tm_align(mobile_coords, target_coords, mobile_seq, target_seq)
+        
+    return res.rmsd, res.tm_norm_chain1
+def detect_clashes(file_path, clash_distance=2.0, bond_distance=1.2):
+    return 0, 0.0
+def detect_clashes_2(file_path, clash_distance=2.0, bond_distance=1.2):
+    """
+    Detects steric clashes using Biotite (Vectorized/Fast).
+    Corrected to handle NumPy adjacency matrices.
+    """
+    try:
+        # 1. Load Structure
+        structure = load_structure(file_path)
+        
+        # 2. Filter out Hydrogens (Vectorized)
+        mask = (structure.element != "H")
+        atoms = structure[mask]
+        
+        if len(atoms) == 0:
+            return 0, 0.0
+
+        # 3. Efficient Neighbor Search
+        cell_list = struc.CellList(atoms, cell_size=clash_distance)
+        
+        # Returns a boolean NumPy array (N x N)
+        adjacency = cell_list.create_adjacency_matrix(clash_distance)
+        
+        # FIX: Use np.where to get indices from a dense NumPy array
+        # rows and cols will be arrays of indices where an interaction exists
+        rows, cols = np.where(adjacency)
+        
+        # 4. Filter Pairs
+        # Filter for unique pairs (row < col) to remove duplicates and self-loops
+        pair_mask = (rows < cols)
+        rows = rows[pair_mask]
+        cols = cols[pair_mask]
+        
+        # 5. Calculate Exact Distances & Apply Bond Filter
+        coords_A = atoms.coord[rows]
+        coords_B = atoms.coord[cols]
+        
+        # Vectorized Euclidean distance calculation
+        diffs = coords_A - coords_B
+        dists_sq = np.sum(diffs**2, axis=1)
+        dists = np.sqrt(dists_sq)
+        
+        # Logic: Clash if dist < clash_distance AND dist > bond_distance
+        real_clashes_mask = (dists > bond_distance)
+        
+        # 6. Count Results
+        num_clashes = np.sum(real_clashes_mask)
+        num_atoms = len(atoms)
+        clashes_per_atom = num_clashes / num_atoms if num_atoms > 0 else 0.0
+        
+        return num_clashes, clashes_per_atom
+
+    except Exception as e:
+        print(f"Error in clash detection for {file_path}: {e}")
+        return 0, 0.0
+
+def compute_SAPscore():
+    return
+
+### BINDING AND POCKET METRICS ###############################################################################################################################
+
+def gnina_minimize_autobox(pdb_file,
+                           ligand,
+                           output_folder,
+                           gnina_path,
+                           cnn,
+                           exhaustiveness, 
+                           autobox_add):
+    """
+    This function both creates poses for the ligand for ESM predictions as well as computes the gnina scores
+    for each structure in the pdb_folder. Returns a dataframe with GNina metrics
+    
+    :param pdb_folder: Description
+    :param ligand: Description
+    :param output_folder: Description
+    :param gnina_path: Description
+    :param cnn: Description
+    :param exhaustiveness: Description
+    :param autobox_add: Description
+    """
+    # Create output directory if it doesn't exist
+    Path(output_folder).mkdir(parents=True, exist_ok=True)
+
+    # Prepare gnina command
+    # Note: Added check to ensure pdb_file is a Path object or string
+    pdb_path = Path(pdb_file)
+    output_path = Path(output_folder) / f"{pdb_path.stem}_ligand.pdb"
+
+    gnina_command = (
+        f'{gnina_path} -r {pdb_file} -l {ligand} --autobox_ligand {pdb_file} '
+        f'-o {output_path} --minimize '
+        f'--exhaustiveness {exhaustiveness} --cnn {cnn} --autobox_add {autobox_add}'
+    )
+    
+    # Run the command
+    gnina_result = subprocess.run(gnina_command, shell=True, capture_output=True, text=True)
+    
+    # Optional: Debug prints (can comment out for production)
+    # print(gnina_command)
+    # print(gnina_result.stdout)
+    
+    output = gnina_result.stdout
+
+    # --- Parsing Logic ---
+
+    # 1. Capture CNN Score
+    # Matches: "CNNscore: 0.41463"
+    match_cnn_score = re.search(r"CNNscore:\s*([-\d.]+)", output)
+    CNN_score = float(match_cnn_score.group(1)) if match_cnn_score else None
+
+    # 2. Capture CNN Affinity
+    # Matches: "CNNaffinity: 4.86840"
+    match_cnn_aff = re.search(r"CNNaffinity:\s*([-\d.]+)", output)
+    CNN_affinity = float(match_cnn_aff.group(1)) if match_cnn_aff else None
+
+    # 3. Capture both Affinity Scores
+    # Matches: "Affinity: -6.19290  -0.54008"
+    # This regex looks for: "Affinity:", spaces, Group 1 (number), spaces, Group 2 (number)
+    match_aff = re.search(r"Affinity:\s*([-\d.]+)\s+([-\d.]+)", output)
+    
+    if match_aff:
+        vina_affinity = float(match_aff.group(1))
+        vina_affinity_2 = float(match_aff.group(2))
+    else:
+        vina_affinity = None
+        vina_affinity_2 = None
+
+    return CNN_score, CNN_affinity, vina_affinity, vina_affinity_2
 ### 3D FILTERING #######################################################################################################################################
 
 def sliding_window_1D_filter(seq, window_size, threshold, aa='A'):
@@ -730,8 +1134,98 @@ def filter_dataframe_1D(df, window_size, threshold, seq_col='seq', aa= 'A'):
     
     return df_filtered
 
+def threed_params_1_df(folder, output_folder, original_path, clash_distance=2.0, bond_distance=1.2,
+                       ligand_path=None, gnina_path="gnina", cnn="default",
+                       exhaustiveness=8, autobox_add=4):
+    """
+    Given a folder with structures, returns the following df: "file_ID", "sequence", "pLDDT mean", "pLDDT std dev", "RMSD", "TMscore", "clashes"
+    """
+    # Skip if output already exists and is not empty
+    if os.path.exists(f"{output_folder}/ESM_filtered_df.csv") and os.path.getsize(f"{output_folder}/ESM_filtered_df.csv") > 0:
+        print(f"3D metrics already exists at {output_folder}/ESM_filtered_df.csv. Skipping generation.")
+        df = pd.read_csv(f"{output_folder}/ESM_filtered_df.csv")
+        return df
+    # Initialise df
+    elements = ["file_ID", "sequence", "pLDDT_mean", "pLDDT_std", "RMSD", "TMscore", "num_clashes","clashes_per_atom","Gnina_CNNscore","Gnina_affinity"]
+    threed_df = pd.DataFrame(columns = elements)
 
-### BINDING AND POCKET METRICS ###############################################################################################################################
+    # Parse folder
+    folder = Path(folder)
+    for file in folder.iterdir():
+        file_path = str(file)
+        if not file_path.endswith(".json"):
+            # pLDDT
+            pLDDT_mean,pLDDT_stdev= extract_plddt(file_path)
+            # RMSD
+            RMSD, TMscore = batch_tm_align(original_path,file_path)
+            # Clashes
+            num_clashes,clash_atom = detect_clashes(file_path, clash_distance=clash_distance, bond_distance=bond_distance)
+            # Sequence
+            seq = extract_sequence(file_path, chain_id='A')["coordinate_sequence"]
+            # GNINA scores
+            Gnina_CNNscore, Gnina_affinity,vina_affinity,vina_affinity_2 = gnina_minimize_autobox(pdb_file=file,
+                                                                    ligand=ligand_path,
+                                                                    output_folder=f"{output_folder}/ESM_Gnina_minimized/",
+                                                                    gnina_path=gnina_path,
+                                                                    cnn=cnn,
+                                                                    exhaustiveness=exhaustiveness,
+                                                                    autobox_add=autobox_add)
+            # Generate row
+            row = pd.Series([file.name, seq, pLDDT_mean, pLDDT_stdev, RMSD, TMscore, num_clashes,clash_atom,Gnina_CNNscore,Gnina_affinity], index=list(threed_df.columns))
+            threed_df.loc[len(threed_df)] = row
+
+    print(threed_df.head(5))
+    return threed_df
+
+def global_score(df, weights={"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2}):
+    # Iterate through the weights to normalize each relevant column
+    for col, weight in weights.items():
+        col_min = df[col].min()
+        col_max = df[col].max()
+        
+        # Create a new column with suffix '_norm'
+        # Handle the edge case where all values are identical (div by zero)
+        if col_max == col_min:
+            df[f"{col}_norm"] = 1.0 
+        else:
+            df[f"{col}_norm"] = (df[col] - col_min) / (col_max - col_min)
+
+    # Calculate the weighted sum using the newly created normalized columns
+    df['global_score'] = sum(df[f"{col}_norm"] * weight for col, weight in weights.items())
+    
+    return df
+
+def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10,top_n_gnina=10):
+
+    # Skip if output already exists and is not empty
+    if os.path.exists(f"{output_folder}/ESM_filtered_df.csv") and os.path.getsize(f"{output_folder}/ESM_filtered_df.csv") > 0:
+        print(f"3D metrics already exists at {output_folder}/ESM_filtered_df.csv. Skipping generation.")
+        df = pd.read_csv(f"{output_folder}/ESM_filtered_df.csv")
+        return df
+    
+    # Drop rows with low pLDDT
+    df = df[df["pLDDT_mean"] >= min_plddt]
+
+    # Drop rows with RMSD out of range
+    df = df[(df["RMSD"] >= min_rmsd) & (df["RMSD"] <= max_rmsd)]
+
+    # Drop rows with too many clashes
+    df = df[df["clashes_per_atom"] <= max_clashes]
+
+    # Global score calculation
+    df = global_score(df, weights)
+
+    # Select top n by global score
+    sorted_df = df.sort_values(by="global_score", ascending=False).reset_index(drop=True)
+    sorted_df = sorted_df.head(top_n_score)
+
+    # Select top n by GNINA
+    sorted_df = sorted_df.sort_values(by="Gnina_affinity", ascending=True).reset_index(drop=True)
+    sorted_df = sorted_df.head(top_n_gnina)
+    sorted_df = sorted_df.sort_values(by="global_score", ascending=False).reset_index(drop=True)
+
+    return sorted_df
+
 
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
 def move_pdbs_to_folder(input_folder, output_folder):
@@ -745,3 +1239,9 @@ def move_pdbs_to_folder(input_folder, output_folder):
     for pdb_file in Path(input_folder).glob("*.pdb"):
         new_path = Path(output_folder) / pdb_file.name
         pdb_file.rename(new_path)
+
+def process_chai_folder(folder):
+    return
+
+def process_AF3_folder(folder):
+    return

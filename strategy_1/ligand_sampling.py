@@ -349,6 +349,7 @@ def run_ligand_sampling_pipeline(ligand_smiles, structure_path, output_path,
     )
     
     print("Ligands sampled successfully.")
+    return lowest_energy_conformer
 
 ### CLI EXECUTION ###################################################################################
 
