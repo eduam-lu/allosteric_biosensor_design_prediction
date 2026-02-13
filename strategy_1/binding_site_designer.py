@@ -133,7 +133,7 @@ gnina_exhaustiveness=8
 gnina_autobox_add=4
 
 ### Second prediction round
-model_flag="CHAI"  # "CHAI" or "AF3"
+model_flag="BOLTZ_ONLY"  # "CHAI" or "AF3" or "BOLTZ_ONLY"
 msa_flag=False  # If true, MSAs will be used during prediction
 
 ### INPUT CHECK ###############################################################################################################################
@@ -341,8 +341,32 @@ ESM_df = func.threed_params_1_df(folder=f'{args.output}/ESM_predictions/', origi
                                  autobox_add=gnina_autobox_add)
 ESM_df = func.threed_filter_1_df(ESM_df, output_folder=f"{args.output}", weights=global_score_weights, min_plddt=MIN_PLDDT_1, min_rmsd=MIN_RMSD_1, max_rmsd=MAX_RMSD_1, max_clashes=MAX_CLASHES_1, top_n_score=top_n_score_ESM,top_n_gnina=top_n_gnina_ESM)
 ESM_df.to_csv(f'{args.output}/ESM_filtered_df.csv')
+
 ### Chai/AF prediction 
-func.second_prediction_round(ESM_df, output_path=f"{args.output}/{model_flag}_prediction",ligand_smiles="C[C@@]1([C@H]2C[C@H]3[C@@H](C(=O)C(=C([C@]3(C(=O)C2=C(C4=C1C=CC=C4O)O)O)O)C(=O)N)N(C)C)O", model_flag=model_flag, MSA_flag=msa_flag)
+
+boltz_df = func.second_prediction_round(
+    df=ESM_df, 
+    model_flag=model_flag, 
+    MSA_flag=msa_flag, 
+    ligand_smiles=ligand_smiles, 
+    output_path=f"{args.output}/{model_flag}_predictions",
+    args_output=args.output, 
+    # Boltz specific parameters
+    pocket_list=None, 
+    max_dist=5.0,
+    use_msa_boltz=False,
+    use_forces=True, 
+    no_kernels=True,
+    path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",
+    devices=1, 
+    recycling_steps=3, 
+    sampling_steps=100, 
+    diffusion_samples=1, 
+    output_format='pdb', 
+    sampling_steps_affinity=100
+)
+boltz_df.to_csv(f'{args.output}/boltz_df.csv')
+#If it's the first time running Chai, it will take longer as it needs to download the model weights
 
 ### Second 3D filter (3D quality and pocket metrics)
 

@@ -6,6 +6,7 @@ import warnings
 import os
 import sys
 import json
+import yaml
 from Bio import PDB
 from Bio.PDB import PDBParser, DSSP, NeighborSearch
 from Bio.SeqUtils import seq1
@@ -15,12 +16,17 @@ import biotite.structure.io as bsio
 from biotite.structure.io import load_structure
 import numpy as np
 from tmtools import tm_align
-
+import shutil
 import pandas as pd
 import re
 from pymol import cmd 
 from pathlib import Path
 import subprocess
+
+
+
+
+
 
 
 
@@ -739,7 +745,6 @@ def AF_json_generator_w_MSA(row, json_path):
 def AF_json_generator_cofold(row,ligand_SMILES, json_path):
     file_name = row['file_ID']
     seq = row['sequence']
-    partial_T = row['partial_T']
 
     json_data = {
         "name": f"{file_name}",
@@ -765,26 +770,76 @@ def AF_json_generator_cofold(row,ligand_SMILES, json_path):
         "version": 1
     }
 
-    with open(f"{json_path}/temp.json", "w") as f:
+    with open(f"{json_path}/temp_cofold.json", "w") as f:
         json.dump(json_data, f, indent=2)
     return
 
-def run_AlphaFold3(row, output_path,msa_flag=False):
+def AF_json_generator_cofold_w_MSA(row,ligand_SMILES, json_path):
+    file_name = row['file_ID']
+    seq = row['sequence']
+
+    json_data = {
+        "name": f"{file_name}",
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": seq,
+                    "unpairedMsa": f">dummy\n{seq}\n",  
+                    "pairedMsa": "",                    
+                    "templates": []
+                }
+            },
+            {
+                "ligand": {
+                    "id": "L",
+                    "smiles": ligand_SMILES
+                }
+            }
+        ],
+        "modelSeeds": [1],
+        "dialect": "alphafold3",
+        "version": 1
+    }
+
+    with open(f"{json_path}/temp_cofold.json", "w") as f:
+        json.dump(json_data, f, indent=2)
+    return
+
+def run_AlphaFold3(row, output_path,msa_flag=False,ligand_SMILES=None):
     # Create temporary JSON file
     if msa_flag:
         AF_json_generator_w_MSA(row, output_path)
+        AF_json_generator_cofold_w_MSA(row,ligand_SMILES, output_path)
     else:
         AF_json_generator_wo_MSA(row, output_path)
-    # Run AF3
+        AF_json_generator_cofold(row,ligand_SMILES, output_path)
+    # Define the command
     af_command = (
-    f"conda run -p /home/ingemar/anaconda3/envs/alphafold3 python /mnt/data/alphafold3/run_alphafold.py "
-    f"--json_path={output_path}/temp.json "
-    f"--output_dir={output_path} "
-    f"--db_dir=/mnt/data/alphafold3/alphafold_databases/ "
-    f"--model_dir=/mnt/data/alphafold3/models/ "
-    f"--num_diffusion_samples=1"
+        f"conda run -p /home/ingemar/anaconda3/envs/alphafold3 python /mnt/data/alphafold3/run_alphafold.py "
+        f"--json_path={output_path}/temp.json "
+        f"--output_dir={output_path}/AF3_prediction "
+        f"--db_dir=/mnt/data/alphafold3/alphafold_databases/ "
+        f"--model_dir=/mnt/data/alphafold3/models/ "
+        f"--num_diffusion_samples=1"
     )
-    af_process = subprocess.run(af_command, shell = True, text=True)
+
+    af_command_cofold = (
+        f"conda run -p /home/ingemar/anaconda3/envs/alphafold3 python /mnt/data/alphafold3/run_alphafold.py "
+        f"--json_path={output_path}/temp_cofold.json "
+        f"--output_dir={output_path}/AF3_cofold "
+        f"--db_dir=/mnt/data/alphafold3/alphafold_databases/ "
+        f"--model_dir=/mnt/data/alphafold3/models/ "
+        f"--num_diffusion_samples=1"
+    )
+
+    # Clone the current environment and add the JAX flag
+    current_env = os.environ.copy()
+    current_env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+    # Execute
+    subprocess.run(af_command, shell=True, env=current_env)
+    subprocess.run(af_command_cofold, shell=True, env=current_env)
 
 def run_chai(row, output_path):
     # Ensure output path exists
@@ -800,7 +855,7 @@ def run_chai(row, output_path):
         f.write(f">protein|{file_name}\n")      # Header line
         f.write(f"{sequence}\n")         # The actual sequence
     # Run chai
-    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_command =f" conda run -n chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
     chai_process = subprocess.run(chai_command, shell=True)
 
     return 
@@ -819,80 +874,255 @@ def run_chai_w_MSA(row, output_path):
         f.write(f">protein|{file_name}\n")      # Header line
         f.write(f"{sequence}\n")         # The actual sequence
     # Run chai
-    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_command =f" conda run -n chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
     chai_process = subprocess.run(chai_command, shell=True)
 
     return 
 
 def run_chai_cofold(row, output_path,ligand_smiles):
     #
-    Path(f"{output_path}_cofold").mkdir(parents=True, exist_ok=True)
+    Path(f"{output_path}").mkdir(parents=True, exist_ok=True)
     #
     sequence = row['sequence']
     file_name = row['file_ID']
     # Create the full path for the temporary FASTA file
-    fasta_path = f"{output_path}_cofold/temp.fa"
+    fasta_path = f"{output_path}/temp.fa"
 
     # Write the sequence to the FASTA file
     with open(fasta_path, 'w') as f:
         f.write(f">protein|{file_name}\n")      # Header line
         f.write(f"{sequence}\n")         # The actual sequence
-        f.write(f">ligand|{file_name}\n")      # Header line
+        f.write(f">ligand|ligand\n")      # Header line
         f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
     # Run chai
-    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_command =f" conda run -n chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
     chai_process = subprocess.run(chai_command, shell=True)
 
     return 
 
 def run_chai_cofold_w_MSA(row, output_path,ligand_smiles):
     #
-    Path(f"{output_path}_cofold").mkdir(parents=True, exist_ok=True)
+    Path(f"{output_path}").mkdir(parents=True, exist_ok=True)
     #
     sequence = row['sequence']
     file_name = row['file_ID']
     # Create the full path for the temporary FASTA file
-    fasta_path = f"{output_path}_cofold/temp.fa"
+    fasta_path = f"{output_path}/temp.fa"
 
     # Write the sequence to the FASTA file
     with open(fasta_path, 'w') as f:
         f.write(f">protein|{file_name}\n")      # Header line
         f.write(f"{sequence}\n")         # The actual sequence
-        f.write(f">ligand|{file_name}\n")      # Header line
+        f.write(f">ligand|ligand\n")      # Header line
         f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
     # Run chai
-    chai_command =f" conda run -p /home/ingemar/miniforge3/envs/chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
+    chai_command =f" conda run -n chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
     chai_process = subprocess.run(chai_command, shell=True)
 
     return 
 
-def second_prediction_round(df,model_flag,MSA_flag,ligand_smiles, output_path):
-    if model_flag not in ['AF3','CHAI']:
+def boltz_yaml_generator(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.0):
+    """
+    Generates a Boltz-compatible YAML file for protein-ligand complexes.
+    
+    Args:
+        row (dict/Series): Must contain 'file_ID' and 'sequence'.
+        yaml_path (str): Directory to save the YAML.
+        ligand_smiles (str): SMILES string for the ligand.
+        pocket_list (list): List of contacts [[CHAIN, RES_IDX], ...]
+        max_dist (float): Maximum distance for pocket constraints.
+    """
+    file_id = row['file_ID']
+    seq = row['sequence']
+    
+    # Constructing the dictionary structure
+    yaml_data = {
+        "version": 1,
+        "sequences": [
+            {
+                "protein": {
+                    "id": "A",
+                    "sequence": seq,
+                    "msa": "empty"  
+                }
+            },
+            {
+                "ligand": {
+                    "id": "B",
+                    "smiles": ligand_smiles
+                }
+            }
+        ],
+        "constraints": [
+            {
+                "pocket": {
+                    "binder": "A",
+                    "contacts": pocket_list,
+                    "max_distance": max_dist,
+                    "force": False
+                }
+            }
+        ]
+    }
+
+    # Ensure output directory exists
+    os.makedirs(yaml_path, exist_ok=True)
+    file_output = os.path.join(yaml_path, f"{file_id}.yaml")
+
+    with open(file_output, "w") as f:
+        # sort_keys=False preserves the order of the dictionary
+        yaml.dump(yaml_data, f, default_flow_style=False, sort_keys=False)
+    
+    return file_output
+
+def run_Boltz2(row,ligand_smiles, output_path,pocket_list, max_dist, use_msa=True, use_forces=True, no_kernels=False,
+                path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",devices=1, recycling_steps=3, sampling_steps=100, diffusion_samples=1, output_format='pdb', sampling_steps_affinity=100):
+    # Generate the yaml for this row
+    yaml_path = boltz_yaml_generator(row, output_path, ligand_smiles, pocket_list, max_dist)
+    # Base command with mandatory flags
+    command_parts = [
+        f"conda run -n boltz boltz predict",
+        f"{yaml_path}",
+        f"--out_dir={output_path}",
+        f"--devices={devices}",
+        f"--recycling_steps={recycling_steps}",
+        f"--sampling_steps={sampling_steps}",
+        f"--diffusion_samples={diffusion_samples}",
+        f"--output_format={output_format}",
+        f"--sampling_steps_affinity={sampling_steps_affinity}"
+    ]
+
+    # Conditional flags
+    if use_msa:
+        command_parts.append("--use_msa_server")
+    
+    if use_forces:
+        command_parts.append("--use_potentials")
+        
+    if no_kernels:
+        command_parts.append("--no_kernels")
+
+    # Join all parts into a single string
+    boltz_command = " ".join(command_parts)
+    
+    # Run the process
+    boltz_process = subprocess.run(boltz_command, shell=True)
+    # Remove yaml file
+
+    return boltz_process
+
+
+def second_prediction_round(
+    df, 
+    model_flag, 
+    MSA_flag, 
+    ligand_smiles, 
+    output_path,
+    args_output, 
+    # Boltz specific parameters
+    pocket_list=None, 
+    max_dist=5.0,
+    use_msa_boltz=False,
+    use_forces=True, 
+    no_kernels=True,
+    path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",
+    devices=1, 
+    recycling_steps=3, 
+    sampling_steps=100, 
+    diffusion_samples=1, 
+    output_format='pdb', 
+    sampling_steps_affinity=100
+):
+    """
+    Runs Boltz 2 unconditionally (with full parameter support), 
+    plus either AF3 or CHAI based on model_flag.
+    """
+    
+    # Check if the user-selected model output already exists
+    if os.path.exists(f"{output_path}/{model_flag}_prediction") and any(os.scandir(f"{output_path}/{model_flag}_prediction")):
+        print(f"{model_flag} predictions already exists at {output_path}. Skipping generation.")
+        return
+    
+    # Create folders for the selected model
+    #Path(f"{output_path}/{model_flag}_prediction").mkdir(parents=True, exist_ok=True)
+    #Path(f"{output_path}/{model_flag}_cofold").mkdir(parents=True, exist_ok=True)
+    
+    # Create folder for Boltz (Always required)
+    Path(f"{args_output}/BOLTZ_prediction").mkdir(parents=True, exist_ok=True)
+    
+    # Validate the selectable model flag
+    if model_flag not in ['AF3', 'CHAI','BOLTZ_ONLY']:
         print("Error: Model flag must be either 'AF3' or 'CHAI'")
         sys.exit(1)
+    
     for index, row in df.iterrows():
+        
+        # ---------------------------------------------------------
+        # 1. Run Boltz 2 (ALWAYS)
+        # ---------------------------------------------------------
+        # Ensure pocket_list is a list (even if empty) to avoid errors
+        #current_pockets = pocket_list if pocket_list is not None else []
+        """
+        run_Boltz2(
+            row=row,
+            ligand_smiles=ligand_smiles,
+            output_path=f"{args_output}/BOLTZ_prediction",
+            pocket_list=current_pockets,
+            max_dist=max_dist,
+            use_msa=use_msa_boltz,                #Mapped from function argument
+            use_forces=use_forces,
+            no_kernels=no_kernels,
+            path_to_boltz_env=path_to_boltz_env,
+            devices=devices,
+            recycling_steps=recycling_steps,
+            sampling_steps=sampling_steps,
+            diffusion_samples=diffusion_samples,
+            output_format=output_format,
+            sampling_steps_affinity=sampling_steps_affinity
+        )
+        """
+        # ---------------------------------------------------------
+        # 2. Run Selected Model (AF3 or CHAI)
+        # ---------------------------------------------------------
         if model_flag == 'AF3':
             if MSA_flag:
-                run_AlphaFold3(row, output_path, msa_flag=True)
+                run_AlphaFold3(row, output_path, msa_flag=True, ligand_SMILES=ligand_smiles)
             else:
-                run_AlphaFold3(row, output_path, msa_flag=False)
+                run_AlphaFold3(row, output_path, msa_flag=False, ligand_SMILES=ligand_smiles)
+        
         elif model_flag == 'CHAI':
             if ligand_smiles:
                 if MSA_flag:
-                    run_chai_cofold_w_MSA(row, output_path, ligand_smiles)
+                    run_chai_w_MSA(row, f"{output_path}/{model_flag}_prediction")
+                    run_chai_cofold_w_MSA(row, f"{output_path}/{model_flag}_cofold", ligand_smiles)
                 else:
-                    run_chai_cofold(row, output_path, ligand_smiles)
+                    run_chai(row, f"{output_path}/{model_flag}_prediction")
+                    run_chai_cofold(row, f"{output_path}/{model_flag}_cofold", ligand_smiles)
             else:
+                # If no ligand is provided, just run the protein prediction
                 if MSA_flag:
-                    run_chai_w_MSA(row, output_path)
+                    run_chai_w_MSA(row, f"{output_path}/{model_flag}_prediction")
                 else:
-                    run_chai(row, output_path)
-                    
-    if model_flag=="AF3":
-        process_AF3_folder(output_path)
-    if model_flag=="CHAI":
-        process_chai_folder(output_path)
-    return
+                    run_chai(row, f"{output_path}/{model_flag}_prediction")
+        elif model_flag == 'BOLTZ_ONLY':
+            continue
+
+    # ---------------------------------------------------------
+    # 3. Post-Processing
+    # ---------------------------------------------------------
+    
+    # Process Boltz (Always)
+    boltz_df = process_Boltz_folder("/home/eduardo/allostery/2XPU_trial/BOLTZ_prediction", f"{args_output}/BOLTZ_pdbs")
+    process_AF3_folder("/home/eduardo/allostery/2XPU_trial/AF3_predictions", f"{args_output}/AF3_pdbs")
+    process_chai_folder("/home/eduardo/allostery/2XPU_trial/CHAI_predictions", f"{args_output}/CHAI_pdbs")
+    # Process Selected Model
+    if model_flag == "AF3":
+        process_AF3_folder(f"{output_path}/{model_flag}_prediction", f"{output_path}/{model_flag}_pdbs")
+    elif model_flag == "CHAI":
+        process_chai_folder(f"{output_path}/{model_flag}_prediction", f"{output_path}/{model_flag}_pdbs")
+        
+    return boltz_df
+
 ### PROTEIN METRICS #########################################################################################################################################
 
 
@@ -1226,6 +1456,7 @@ def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max
 
     return sorted_df
 
+### Visualization and assessment #######################################################################################################################################
 
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
 def move_pdbs_to_folder(input_folder, output_folder):
@@ -1240,8 +1471,219 @@ def move_pdbs_to_folder(input_folder, output_folder):
         new_path = Path(output_folder) / pdb_file.name
         pdb_file.rename(new_path)
 
-def process_chai_folder(folder):
+def process_chai_folder(base_path, output_base_path):
+    """
+    Scans for 'CHAI_prediction' and 'CHAI_cofold' folders.
+    Inside each sequence subfolder, it finds 'pred.model_idx_0.cif',
+    renames it to the sequence ID (folder name), and moves it to 
+    'CHAI_prediction_pdbs' or 'CHAI_cofold_pdbs'.
+
+    Args:
+        base_path (str): The root path containing CHAI_prediction/CHAI_cofold folders.
+        output_base_path (str): The destination root path for the new _pdbs folders.
+    """
+    base_path = Path(base_path)
+    output_base_path = Path(output_base_path)
+
+    # Map source folders to destination folders
+    folders_to_process = {
+        "CHAI_prediction": "CHAI_prediction_pdbs",
+        "CHAI_cofold": "CHAI_cofold_pdbs"
+    }
+
+    for source_name, dest_name in folders_to_process.items():
+        source_dir = base_path / source_name
+        dest_dir = output_base_path / dest_name
+
+        if not source_dir.exists():
+            continue
+
+        print(f"Processing {source_name} -> {dest_name}...")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Iterate over the subdirectories (each represents a sequence/structure)
+        # Example subdir: structure_pos0_conf0_rfdesign_1_seq_1.pdb
+        for subdir in source_dir.iterdir():
+            if subdir.is_dir():
+                # Define the specific file we want (Model 0)
+                model_0_file = subdir / "pred.model_idx_0.cif"
+
+                if model_0_file.exists():
+                    try:
+                        # The renaming logic:
+                        # Use the folder name as the ID. 
+                        # If the folder name ends in '.pdb' (as seen in the image), we strip it to be clean.
+                        folder_name = subdir.name
+                        if folder_name.endswith('.pdb'):
+                            new_name = folder_name[:-4] + ".cif"
+                        else:
+                            new_name = folder_name + ".cif"
+
+                        dest_file = dest_dir / new_name
+
+                        # Copy and rename
+                        shutil.copy2(model_0_file, dest_file)
+                        
+                    except Exception as e:
+                        print(f"  Error moving {model_0_file}: {e}")
+                else:
+                    # Optional: Warn if model 0 is missing in a folder
+                    # print(f"  Warning: pred.model_idx_0.cif not found in {subdir.name}")
+                    pass
+
     return
 
-def process_AF3_folder(folder):
+def process_AF3_folder(base_path, output_base_path):
+    """
+    Scans the base directory for 'AF3_prediction' and 'AF3_cofold' folders.
+    Moves/Copies the resulting .cif files from the subdirectories into 
+    flat 'AF3_prediction_pdbs' and 'AF3_cofold_pdbs' folders.
+    
+    Args:
+        base_path (str): The root path containing AF3_prediction/AF3_cofold folders.
+        output_base_path (str): The destination root path for the new _pdbs folders.
+    """
+    base_path = Path(base_path)
+    output_base_path = Path(output_base_path)
+    
+    # Define the mapping of source folder names to destination folder names
+    # Key: source subfolder name, Value: destination subfolder name
+    folders_to_process = {
+        "AF3_prediction": "AF3_prediction_pdbs",
+        "AF3_cofold": "AF3_cofold_pdbs"
+    }
+
+    for source_name, dest_name in folders_to_process.items():
+        source_dir = base_path / source_name
+        dest_dir = output_base_path / dest_name
+        
+        # Skip if the source directory doesn't exist (e.g. if you didn't run cofold)
+        if not source_dir.exists():
+            continue
+
+        print(f"Processing {source_name} -> {dest_name}...")
+        
+        # Create destination directory
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # AF3 outputs are usually nested: Source_Dir / Job_Name / model.cif
+        # We search recursively for .cif files
+        cif_files = list(source_dir.rglob("*.cif"))
+        
+        if not cif_files:
+            print(f"  No .cif files found in {source_dir}")
+            continue
+            
+        count = 0
+        for cif_file in cif_files:
+            try:
+                # The file is usually named 'model.cif' or similar generic names inside a named folder.
+                # To avoid collisions and keep the sequence ID, we prefer the name of the PARENT folder 
+                # (which is usually the job name/sequence header).
+                
+                # Example: .../structure_pos0_..._seq_1.pdb/structure_..._model.cif
+                # We use the filename itself if it's descriptive, otherwise fall back to parent.
+                
+                new_filename = cif_file.name
+                
+                # If the filename is just "model.cif", prepend the parent folder name
+                if new_filename == "model.cif":
+                    new_filename = f"{cif_file.parent.name}.cif"
+                
+                dest_file = dest_dir / new_filename
+                
+                # Copy the file (using copy2 to preserve metadata)
+                shutil.copy2(cif_file, dest_file)
+                count += 1
+                
+            except Exception as e:
+                print(f"  Error moving {cif_file}: {e}")
+                
+        print(f"  Successfully moved {count} files to {dest_dir}")
+
     return
+
+
+
+def process_Boltz_folder(input_folder, output_pdbs_folder):
+    """
+    Parses a Boltz prediction folder, moves PDBs to a central folder, 
+    and aggregates confidence metrics into a DataFrame.
+
+    Args:
+        input_folder (str): Path to the root BOLTZ_prediction folder.
+        output_pdbs_folder (str): Path where the resulting PDBs should be moved/copied.
+
+    Returns:
+        pd.DataFrame: A dataframe containing file IDs and extracted confidence metrics.
+    """
+    input_path = Path(input_folder)
+    output_pdb_path = Path(output_pdbs_folder)
+    
+    # Create output directory if it doesn't exist
+    output_pdb_path.mkdir(parents=True, exist_ok=True)
+
+    data_rows = []
+    
+    # Recursively find all confidence JSON files (using rglob to handle nested depth)
+    # The image shows files named like "confidence_structure_..._model_0.json"
+    json_files = list(input_path.rglob("confidence_*.json"))
+    
+    if not json_files:
+        print(f"No confidence JSON files found in {input_folder}")
+        return pd.DataFrame()
+
+
+    for json_file in json_files:
+        try:
+            # 1. Parse the JSON file
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+
+            # Extract specific fields
+            row = {
+                # We derive a file_ID from the JSON filename (removing 'confidence_' and extension)
+                "file_ID": json_file.stem.replace("confidence_", ""),
+                "confidence_score": data.get("confidence_score"),
+                "ptm": data.get("ptm"),
+                "iptm": data.get("iptm"),
+                "ligand_iptm": data.get("ligand_iptm"),
+                "protein_iptm": data.get("protein_iptm"),
+                "complex_plddt": data.get("complex_plddt"),
+                "complex_iplddt": data.get("complex_iplddt"),
+                "complex_pde": data.get("complex_pde"),
+                "complex_ipde": data.get("complex_ipde")
+            }
+            
+            # 2. Locate the corresponding PDB file
+            # Based on Boltz structure, the PDB is usually a sibling with the same name 
+            # but without the "confidence_" prefix.
+            # Example JSON: confidence_structure_..._model_0.json
+            # Example PDB:  structure_..._model_0.pdb
+            
+            expected_pdb_name = json_file.name.replace("confidence_", "").replace(".json", ".pdb")
+            source_pdb_path = json_file.parent / expected_pdb_name
+            
+            if source_pdb_path.exists():
+                # Define destination path
+                dest_pdb_path = output_pdb_path / expected_pdb_name
+                
+                # Copy the file (Use shutil.move if you want to delete the original)
+                shutil.copy2(source_pdb_path, dest_pdb_path)
+            else:
+                print(f"Warning: Corresponding PDB not found for {json_file.name}")
+
+            data_rows.append(row)
+            
+        except Exception as e:
+            print(f"Error processing {json_file}: {e}")
+
+    # Create DataFrame
+    df = pd.DataFrame(data_rows)
+    
+    # Reorder columns to ensure file_ID is first
+    if not df.empty and 'file_ID' in df.columns:
+        cols = ['file_ID'] + [c for c in df.columns if c != 'file_ID']
+        df = df[cols]
+
+    return df
