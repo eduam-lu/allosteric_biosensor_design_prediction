@@ -126,15 +126,35 @@ global_score_weights = {"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -
 top_n_score_ESM = 10
 top_n_gnina_ESM = 9
 
-### ESM GNINA
+### GNINA params
 gnina_path="gnina"
 gnina_cnn="crossdock_default2018"
 gnina_exhaustiveness=8
 gnina_autobox_add=4
 
 ### Second prediction round
-model_flag="BOLTZ_ONLY"  # "CHAI" or "AF3" or "BOLTZ_ONLY"
+model_flag="CHAI"  # "CHAI" or "AF3" or "BOLTZ_ONLY"
 msa_flag=False  # If true, MSAs will be used during prediction
+
+# Boltz params
+# Boltz specific parameters
+ 
+max_dist=5.0
+use_msa_boltz=True
+use_forces=True
+no_kernels=True
+path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz"
+devices=1 
+recycling_steps=3
+sampling_steps=100 
+diffusion_samples=1 
+output_format='pdb' 
+sampling_steps_affinity=100
+binding_pocket = None #[60, 64, 67, 82, 86, 100, 103, 104, 105, 109, 112, 113, 116, 117, 131, 134, 137, 138]
+
+# Final filtering
+top_n_score_final = 5
+top_n_gnina_final = 2
 
 ### INPUT CHECK ###############################################################################################################################
 
@@ -335,12 +355,13 @@ func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',
 ESM_df = func.threed_params_1_df(folder=f'{args.output}/ESM_predictions/', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
                                  ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
                                  output_folder=f"{args.output}",
+                                 output_name='ESM_filtered_df.csv',
                                  gnina_path=gnina_path,
                                  cnn=gnina_cnn, 
                                  exhaustiveness=gnina_exhaustiveness, 
                                  autobox_add=gnina_autobox_add)
 ESM_df = func.threed_filter_1_df(ESM_df, output_folder=f"{args.output}", weights=global_score_weights, min_plddt=MIN_PLDDT_1, min_rmsd=MIN_RMSD_1, max_rmsd=MAX_RMSD_1, max_clashes=MAX_CLASHES_1, top_n_score=top_n_score_ESM,top_n_gnina=top_n_gnina_ESM)
-ESM_df.to_csv(f'{args.output}/ESM_filtered_df.csv')
+ESM_df.to_csv(f'{args.output}/ESM_filtered_df.csv',index=False)
 
 ### Chai/AF prediction 
 
@@ -354,7 +375,7 @@ boltz_df = func.second_prediction_round(
     # Boltz specific parameters
     pocket_list=None, 
     max_dist=5.0,
-    use_msa_boltz=False,
+    use_msa_boltz=True,
     use_forces=True, 
     no_kernels=True,
     path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",
@@ -365,10 +386,66 @@ boltz_df = func.second_prediction_round(
     output_format='pdb', 
     sampling_steps_affinity=100
 )
-boltz_df.to_csv(f'{args.output}/boltz_df.csv')
+#boltz_df.to_csv(f'{args.output}/boltz_df.csv')
 #If it's the first time running Chai, it will take longer as it needs to download the model weights
 
 ### Second 3D filter (3D quality and pocket metrics)
+# Regular prediction
+second_prediction_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_prediction_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+                                 ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
+                                 output_folder=f"{args.output}",
+                                 output_name=f'{model_flag}_predictions.csv',
+                                 gnina_path=gnina_path,
+                                 cnn=gnina_cnn, 
+                                 exhaustiveness=gnina_exhaustiveness, 
+                                 autobox_add=gnina_autobox_add)
+second_prediction_df.to_csv(f'{args.output}/{model_flag}_predictions.csv')
+
+# Cofold prediction
+second_prediction_cofold_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_cofold_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+                                 ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
+                                 output_folder=f"{args.output}",
+                                 output_name=f'{model_flag}_cofold_predictions.csv',
+                                 gnina_path=gnina_path,
+                                 cnn=gnina_cnn, 
+                                 exhaustiveness=gnina_exhaustiveness, 
+                                 autobox_add=gnina_autobox_add)
+
+second_prediction_cofold_df = func.check_cofold_validity(
+    df=second_prediction_cofold_df, 
+    path_to_structures=f'{args.output}/{model_flag}_pdbs/{model_flag}_cofold_pdbs', 
+    ligand_id='LIG2', 
+    site_residues=binding_pocket, 
+    center_cutoff=4.0,
+    extension=".cif")
+
+second_prediction_cofold_df.to_csv(f'{args.output}/{model_flag}_cofold_predictions.csv')
+# Boltz prediction
+boltz_prediction_df = func.threed_params_1_df(folder=f'{args.output}/BOLTZ_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+                                 ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
+                                 output_folder=f"{args.output}",
+                                 output_name=f'BOLTZ_predictions.csv',
+                                 gnina_path=gnina_path,
+                                 cnn=gnina_cnn, 
+                                 exhaustiveness=gnina_exhaustiveness, 
+                                 autobox_add=gnina_autobox_add)
+
+boltz_prediction_df = func.check_cofold_validity(
+    df=second_prediction_cofold_df, 
+    path_to_structures=f'{args.output}/BOLTZ_pdbs', 
+    ligand_id='LIG', 
+    site_residues=binding_pocket, 
+    center_cutoff=4.0,
+    extension=".pdb")
+
+boltz_prediction_df.to_csv(f'{args.output}/BOLTZ_predictions.csv')
+
 
 ### Final filtering and selection of best candidates
+
+func.threed_filter_2_df([second_prediction_df, second_prediction_cofold_df, boltz_prediction_df], output_folder=f"{args.output}",
+                         output_names=[f'final{model_flag}_predictions.csv', f'final_{model_flag}_cofold_predictions.csv', f'final_BOLTZ_predictions.csv'],
+                         weights=global_score_weights, min_plddt=MIN_PLDDT_1, min_rmsd=MIN_RMSD_1, max_rmsd=MAX_RMSD_1, max_clashes=MAX_CLASHES_1, top_n_score=top_n_score_final,top_n_gnina=top_n_gnina_final)
+
+
 

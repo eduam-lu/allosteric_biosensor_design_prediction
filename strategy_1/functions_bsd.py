@@ -8,9 +8,9 @@ import sys
 import json
 import yaml
 from Bio import PDB
-from Bio.PDB import PDBParser, DSSP, NeighborSearch
+from Bio.PDB import PDBParser, MMCIFParser, DSSP, NeighborSearch, Selection
 from Bio.SeqUtils import seq1
-
+import numpy as np
 import biotite.structure as struc
 import biotite.structure.io as bsio
 from biotite.structure.io import load_structure
@@ -22,7 +22,6 @@ import re
 from pymol import cmd 
 from pathlib import Path
 import subprocess
-
 
 
 
@@ -106,29 +105,48 @@ def get_chain_id(pdb_path):
             
     return None
 
+
 def extract_sequence(pdb_path, chain_id='A'):
     """
-    Main wrapper to parse file and combine info.
+    Main wrapper to parse file (PDB or CIF) and combine info.
     """
-    parser = PDBParser(QUIET=True)
+    # 1. Select the correct parser
+    if str(pdb_path).endswith('.cif'):
+        parser = MMCIFParser(QUIET=True)
+        is_cif = True
+    else:
+        parser = PDBParser(QUIET=True)
+        is_cif = False
+
     try:
         structure = parser.get_structure('struct', pdb_path)
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Structure Parsing Error: {str(e)}"}
 
-    # 1. Get SEQRES sequence
-    seqres = get_seqres_sequence(structure, chain_id)
-    
-    # 2. Get Coordinate Sequence
-    if chain_id in structure[0]:
-        coord_seq, res_count = get_coordinate_sequence(structure[0][chain_id])
-    else:
-        coord_seq, res_count = ("", 0)
-    
-    if seqres is None:
-        seqres = coord_seq  # Fallback to coordinate sequence if SEQRES not found
-    
-    # 3. Complete C term missing residues with '-'
+    # 2. Get SEQRES sequence
+    # Note: Ensure your 'get_seqres_sequence' helper can handle CIF structures.
+    # CIF files often don't populate structure.header['seqres']. 
+    try:
+        seqres = get_seqres_sequence(structure, chain_id)
+    except Exception:
+        seqres = None
+
+    # 3. Get Coordinate Sequence
+    # MMCIFParser usually uses auth_id (e.g. 'A') by default, so this matches PDB behavior.
+    try:
+        if chain_id in structure[0]:
+            coord_seq, res_count = get_coordinate_sequence(structure[0][chain_id])
+        else:
+            coord_seq, res_count = ("", 0)
+    except KeyError:
+         return {"error": f"Chain {chain_id} not found in structure"}
+
+    # 4. Fallback Logic
+    if not seqres:
+        seqres = coord_seq  # Fallback to coordinate sequence if SEQRES not found/empty
+
+    # 5. Alignment / Padding Logic
+    # (If coordinate sequence is shorter than SEQRES, pad the end)
     if len(coord_seq) < len(seqres):
         coord_seq += '-' * (len(seqres) - len(coord_seq))
     
@@ -136,15 +154,15 @@ def extract_sequence(pdb_path, chain_id='A'):
     found_residues = len(coord_seq) - missing_residues
     missing_positions = [i+1 for i, res in enumerate(coord_seq) if res == '-']
 
-    # 4. Find first position that's not - to determine starting residue number
+    # 6. Find start position
     first_residue_pos = next((i for i, res in enumerate(coord_seq) if res != '-'), None)
     if first_residue_pos is not None:
-        start_residue_number = first_residue_pos + 1  # +1 for 1-based indexing
+        start_residue_number = first_residue_pos + 1  # 1-based indexing
     else:
-        start_residue_number = None  # All residues are missing
+        start_residue_number = None 
 
     return {
-        "pdb_id": str(pdb_path).split('/')[-1].split('.')[0],
+        "pdb_id": os.path.basename(pdb_path).split('.')[0],
         "seqres": seqres,
         "coordinate_sequence": coord_seq,
         "residue_count": len(coord_seq),
@@ -956,10 +974,17 @@ def boltz_yaml_generator(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.
         "constraints": [
             {
                 "pocket": {
-                    "binder": "A",
+                    "binder": "A",  # Defining the pocket on the Protein (A)
                     "contacts": pocket_list,
                     "max_distance": max_dist,
                     "force": False
+                }
+            }
+        ],
+        "properties": [
+            {
+                "affinity": {
+                    "binder": "B"  # Calculate affinity for the Ligand (B)
                 }
             }
         ]
@@ -1039,7 +1064,7 @@ def second_prediction_round(
     """
     
     # Check if the user-selected model output already exists
-    if os.path.exists(f"{output_path}/{model_flag}_prediction") and any(os.scandir(f"{output_path}/{model_flag}_prediction")):
+    if os.path.exists(f"{output_path}") and any(os.scandir(f"{output_path}")):
         print(f"{model_flag} predictions already exists at {output_path}. Skipping generation.")
         return
     
@@ -1061,8 +1086,7 @@ def second_prediction_round(
         # 1. Run Boltz 2 (ALWAYS)
         # ---------------------------------------------------------
         # Ensure pocket_list is a list (even if empty) to avoid errors
-        #current_pockets = pocket_list if pocket_list is not None else []
-        """
+        current_pockets = pocket_list if pocket_list is not None else []
         run_Boltz2(
             row=row,
             ligand_smiles=ligand_smiles,
@@ -1080,7 +1104,6 @@ def second_prediction_round(
             output_format=output_format,
             sampling_steps_affinity=sampling_steps_affinity
         )
-        """
         # ---------------------------------------------------------
         # 2. Run Selected Model (AF3 or CHAI)
         # ---------------------------------------------------------
@@ -1330,6 +1353,84 @@ def gnina_minimize_autobox(pdb_file,
         vina_affinity_2 = None
 
     return CNN_score, CNN_affinity, vina_affinity, vina_affinity_2
+
+def get_centroid_distance(structure_path, ligand_id, site_residues, center_cutoff):
+    """
+    Helper function: Parses PDB and calculates centroid distance.
+    Returns: (is_valid, distance)
+    """
+    parser = PDBParser(QUIET=True)
+    
+    try:
+        structure = parser.get_structure('struct', structure_path)
+    except Exception as e:
+        print(f"Error parsing {structure_path}: {e}")
+        return False, np.nan
+
+    # 1. Extract Ligand Atoms
+    ligand_atoms = []
+    for res in Selection.unfold_entities(structure, 'R'):
+        # Check against ligand_id (adjust if your PDB uses different naming)
+        if res.get_resname() == ligand_id:
+            ligand_atoms.extend(res.get_atoms())
+            
+    if not ligand_atoms:
+        return False, np.nan  # Ligand missing
+
+    # 2. Extract Active Site Atoms
+    site_atoms = []
+    for res in Selection.unfold_entities(structure, 'R'):
+        if res.id[1] in site_residues:
+            site_atoms.extend(res.get_atoms())
+
+    if not site_atoms:
+        return False, np.nan  # Active site missing
+
+    # 3. Calculate Centroids using NumPy
+    lig_coords = np.array([atom.get_coord() for atom in ligand_atoms])
+    site_coords = np.array([atom.get_coord() for atom in site_atoms])
+    
+    lig_centroid = np.mean(lig_coords, axis=0)
+    site_centroid = np.mean(site_coords, axis=0)
+
+    # 4. Calculate Distance
+    distance = np.linalg.norm(lig_centroid - site_centroid)
+    is_valid = distance <= center_cutoff
+    
+    return is_valid, distance
+
+def check_cofold_validity(df, path_to_structures, ligand_id, site_residues, center_cutoff=4.0,extension=".pdb"):
+    """
+    Updates the dataframe with 'distance' and 'is_valid' columns based on ligand placement.
+    """
+    distances = []
+    validity = []
+    
+    print(f"Processing {len(df)} structures for ligand '{ligand_id}'...")
+
+    for index, row in df.iterrows():
+        file_id = row['file_ID'].split('.')[0]  # Remove extension if present
+        file_id = file_id.lower()  # Ensure lowercase for consistency
+        # Construct full path (handles missing extension if needed)
+        structure_path = os.path.join(path_to_structures, f"{file_id}{extension}")
+        
+        if not os.path.exists(structure_path):
+            print(f"File not found: {structure_path}")
+            distances.append(np.nan)
+            validity.append(False)
+            continue
+            
+        # Call the helper
+        is_valid, dist = get_centroid_distance(structure_path, ligand_id, site_residues, center_cutoff)
+        
+        distances.append(dist)
+        validity.append(is_valid)
+
+    # Assign new columns
+    df['distance'] = distances
+    df['is_valid'] = validity
+    
+    return df
 ### 3D FILTERING #######################################################################################################################################
 
 def sliding_window_1D_filter(seq, window_size, threshold, aa='A'):
@@ -1364,17 +1465,17 @@ def filter_dataframe_1D(df, window_size, threshold, seq_col='seq', aa= 'A'):
     
     return df_filtered
 
-def threed_params_1_df(folder, output_folder, original_path, clash_distance=2.0, bond_distance=1.2,
+def threed_params_1_df(folder, output_folder,output_name, original_path, clash_distance=2.0, bond_distance=1.2,
                        ligand_path=None, gnina_path="gnina", cnn="default",
                        exhaustiveness=8, autobox_add=4):
     """
-    Given a folder with structures, returns the following df: "file_ID", "sequence", "pLDDT mean", "pLDDT std dev", "RMSD", "TMscore", "clashes"
+    Given a folder with structures, returns the following df: "file_ID", "sequence", "pLDDT mean", "pLDDT std dev", "RMSD", "TMscore", "clashes","Gnina_CNNscore","Gnina_affinity"
     """
     # Skip if output already exists and is not empty
-    if os.path.exists(f"{output_folder}/ESM_filtered_df.csv") and os.path.getsize(f"{output_folder}/ESM_filtered_df.csv") > 0:
-        print(f"3D metrics already exists at {output_folder}/ESM_filtered_df.csv. Skipping generation.")
-        df = pd.read_csv(f"{output_folder}/ESM_filtered_df.csv")
-        return df
+    if os.path.exists(f"{output_folder}/{output_name}") and os.path.getsize(f"{output_folder}/{output_name}") > 0:
+        print(f"3D metrics already exists at {output_folder}/{output_name}. Skipping generation.")
+        threed_df = pd.read_csv(f"{output_folder}/{output_name}")
+        return threed_df
     # Initialise df
     elements = ["file_ID", "sequence", "pLDDT_mean", "pLDDT_std", "RMSD", "TMscore", "num_clashes","clashes_per_atom","Gnina_CNNscore","Gnina_affinity"]
     threed_df = pd.DataFrame(columns = elements)
@@ -1456,7 +1557,76 @@ def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max
 
     return sorted_df
 
-### Visualization and assessment #######################################################################################################################################
+def threed_filter_2_df(df_list, output_folder,output_names, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10, top_n_gnina=10):
+    
+    # 1. Skip if output already exists (checking the first file as a proxy)
+    output_path = f"{output_folder}/ESM_filtered_df_0.csv"
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        print(f"3D metrics already exists. Skipping generation.")
+        # Reloading logic would go here if needed, usually just returns existing files
+        return [pd.read_csv(f"{output_folder}/ESM_filtered_df_{i}.csv") for i in range(len(df_list))]
+
+    filtered_dfs = []
+    
+    # 2. First Pass: Apply filters and calculate individual global scores
+    for df in df_list:
+        # Filter by physical constraints
+        df = df[
+            (df["pLDDT_mean"] >= min_plddt) & 
+            (df["RMSD"] >= min_rmsd) & 
+            (df["RMSD"] <= max_rmsd) & 
+            (df["clashes_per_atom"] <= max_clashes)
+        ].copy()
+        
+        # Calculate global score for this specific replicate
+        df = global_score(df, weights)
+        filtered_dfs.append(df)
+
+    # 3. Find intersection of IDs (only keep IDs that survived filters in ALL dataframes)
+    # We assume 'file_ID' is the common identifier. 
+    common_ids = set(filtered_dfs[0]["file_ID"])
+    for df in filtered_dfs[1:]:
+        common_ids.intersection_update(set(df["file_ID"]))
+    
+    if not common_ids:
+        print("No designs survived the filters across all dataframes.")
+        return []
+
+    # 4. Build the intermediate "temp_df" to sum scores
+    # Initialize with the common IDs
+    temp_df = pd.DataFrame({"file_ID": list(common_ids)})
+    temp_df["joint_global_score"] = 0.0
+    temp_df["joint_gnina"] = 0.0
+
+    # Add up the scores from each filtered dataframe
+    for df in filtered_dfs:
+        # Filter this df to only common IDs to ensure alignment
+        subset = df[df["file_ID"].isin(common_ids)].set_index("file_ID")
+        
+        # Map scores to the temp_df
+        temp_df["joint_global_score"] += temp_df["file_ID"].map(subset["global_score"]).fillna(0)
+        temp_df["joint_gnina"] += temp_df["file_ID"].map(subset["Gnina_affinity"]).fillna(0)
+
+    # 5. Ranking Selection on the Joint Scores
+    temp_df.to_csv(f"{output_folder}/final_scores.csv", index=False)
+    # Sort by Joint Global Score -> Keep Top N
+    temp_df = temp_df.sort_values(by="joint_global_score", ascending=False).head(top_n_score)
+    temp_df.to_csv(f"{output_folder}/final_scores_topn_filtered.csv", index=False)
+    # Sort by Joint Gnina (ascending usually for affinity) -> Keep Top N
+    temp_df = temp_df.sort_values(by="joint_gnina", ascending=True).head(top_n_gnina)
+    temp_df.to_csv(f"{output_folder}/final_scores_topgnina_filtered.csv", index=False)
+    # 6. Final Filter: Return the original dataframes containing only the winning IDs
+    winning_ids = temp_df["file_ID"].values
+    
+    final_output_dfs = []
+    for df,name in zip(filtered_dfs,output_names):
+        final_df = df[df["file_ID"].isin(winning_ids)].copy()
+        
+        # Optional: Save individual CSVs for each replicate
+        final_df.to_csv(f"{output_folder}/{name}.csv", index=False)
+        final_output_dfs.append(final_df)
+
+    return 
 
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
 def move_pdbs_to_folder(input_folder, output_folder):
@@ -1608,14 +1778,14 @@ def process_AF3_folder(base_path, output_base_path):
 def process_Boltz_folder(input_folder, output_pdbs_folder):
     """
     Parses a Boltz prediction folder, moves PDBs to a central folder, 
-    and aggregates confidence metrics into a DataFrame.
+    and aggregates confidence and affinity metrics into a DataFrame.
 
     Args:
         input_folder (str): Path to the root BOLTZ_prediction folder.
         output_pdbs_folder (str): Path where the resulting PDBs should be moved/copied.
 
     Returns:
-        pd.DataFrame: A dataframe containing file IDs and extracted confidence metrics.
+        pd.DataFrame: A dataframe containing file IDs, confidence metrics, and affinity metrics.
     """
     input_path = Path(input_folder)
     output_pdb_path = Path(output_pdbs_folder)
@@ -1625,8 +1795,7 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
 
     data_rows = []
     
-    # Recursively find all confidence JSON files (using rglob to handle nested depth)
-    # The image shows files named like "confidence_structure_..._model_0.json"
+    # Recursively find all confidence JSON files
     json_files = list(input_path.rglob("confidence_*.json"))
     
     if not json_files:
@@ -1636,14 +1805,16 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
 
     for json_file in json_files:
         try:
-            # 1. Parse the JSON file
+            # 1. Parse the Confidence JSON file
             with open(json_file, 'r') as f:
                 data = json.load(f)
 
-            # Extract specific fields
+            # Derive file_ID (e.g., structure_..._model_0)
+            file_id = json_file.stem.replace("confidence_", "")
+            file_id = file_id.replace("_model_0", "")
+            # Extract standard confidence fields
             row = {
-                # We derive a file_ID from the JSON filename (removing 'confidence_' and extension)
-                "file_ID": json_file.stem.replace("confidence_", ""),
+                "file_ID": file_id,
                 "confidence_score": data.get("confidence_score"),
                 "ptm": data.get("ptm"),
                 "iptm": data.get("iptm"),
@@ -1655,23 +1826,49 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
                 "complex_ipde": data.get("complex_ipde")
             }
             
-            # 2. Locate the corresponding PDB file
-            # Based on Boltz structure, the PDB is usually a sibling with the same name 
-            # but without the "confidence_" prefix.
-            # Example JSON: confidence_structure_..._model_0.json
-            # Example PDB:  structure_..._model_0.pdb
+            # 2. Look for corresponding Affinity JSON file
+            # Assuming naming convention: affinity_[file_ID].json
+            affinity_file = json_file.parent / f"affinity_{file_id}.json"
             
-            expected_pdb_name = json_file.name.replace("confidence_", "").replace(".json", ".pdb")
+            if affinity_file.exists():
+                try:
+                    with open(affinity_file, 'r') as af:
+                        affinity_data = json.load(af)
+                        
+                        # Add specific affinity metrics to the row
+                        # We use .get() to avoid errors if keys are missing
+                        row["affinity_pred_value"] = affinity_data.get("affinity_pred_value")
+                        row["affinity_probability_binary"] = affinity_data.get("affinity_probability_binary")
+                        
+                        # Add ensemble member metrics if they exist (e.g., value1, value2)
+                        # We iterate the keys to capture dynamic fields like value1, value2, etc.
+                        for key, value in affinity_data.items():
+                            if key not in row: # Avoid overwriting existing keys if any overlap
+                                row[key] = value
+                                
+                except Exception as e:
+                    print(f"Error processing affinity file {affinity_file}: {e}")
+            else:
+                # If you expect every file to have affinity, you might want to warn here.
+                # print(f"Warning: Affinity file not found for {file_id}")
+                pass
+
+            # 3. Locate and Move the corresponding PDB file
+            expected_pdb_name = f"{file_id}.pdb"
             source_pdb_path = json_file.parent / expected_pdb_name
             
             if source_pdb_path.exists():
-                # Define destination path
                 dest_pdb_path = output_pdb_path / expected_pdb_name
-                
-                # Copy the file (Use shutil.move if you want to delete the original)
                 shutil.copy2(source_pdb_path, dest_pdb_path)
             else:
-                print(f"Warning: Corresponding PDB not found for {json_file.name}")
+                # Try finding it with the original filename logic just in case
+                expected_pdb_name_alt = json_file.name.replace("confidence_", "").replace(".json", ".pdb")
+                source_pdb_path_alt = json_file.parent / expected_pdb_name_alt
+                
+                if source_pdb_path_alt.exists():
+                    shutil.copy2(source_pdb_path_alt, output_pdb_path / expected_pdb_name_alt)
+                else:
+                    print(f"Warning: Corresponding PDB not found for {json_file.name}")
 
             data_rows.append(row)
             
@@ -1687,3 +1884,6 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
         df = df[cols]
 
     return df
+
+def second_prediction_joint_df():
+    return
