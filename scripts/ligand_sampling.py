@@ -48,7 +48,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 import numpy as np
 import pymol
-
+pymol.finish_launching(['pymol', '-qc'])
 ### PARAMS ##########################################################################################
 num_conformers=5
 conformer_rmsd_cutoff=0.75
