@@ -49,7 +49,7 @@ ligand_smiles = "C[C@@]1([C@H]2C[C@H]3[C@@H](C(=O)C(=C([C@]3(C(=O)C2=C(C4=C1C=CC
 ligand_name = "Tc"  # Name of the ligand (used in PDB files)
 
 num_conformers = 2  # Number of conformers to generate for the ligand
-num_positions = 2  # Number of different positions to sample for the ligand around the protein
+num_positions = 1  # Number of different positions to sample for the ligand around the protein
 conformer_rmsd_cutoff = 0.75  # RMSD cutoff for filtering conformers. Anything below this value will be considered redundant.
 
 rotation = 15  # Rotation angle in degrees for exploring ligand placement
@@ -65,10 +65,11 @@ user_defined_residues = None  # If provided, the program ensures this list of re
 ### Redesign conditions params
 
 ligand_MPNN_only = False  # If true, only the ligandMPNN step will be performed, skipping RF diffusion
+RF_folder = None # If provided, this folder with RF diffusion designs will be used as input for LigandMPNN instead of running RF diffusion. The folder should contain pdb files with the redesigned structures.
 RF_model = "all_atom"  # RF diffusion model to use: "all_atom", "RF1", "RF3"
 
 # RF redesign conditions
-consertative_redesign = False  # If true,residues within a secondary structure element will not be redesigned. Except if they are the first of final residue of the element.
+consertative_redesign = False  # If true,residues within a secondary structure element will not be redesigned. Except if they are the first of final residue of the element.NOT IMPLEMENTED YET
 segment_extension = 1  # Number of residues to extend the redesign segment on each side
 n_termini_extension = 1  # Number of residues to extend the redesign segment at the N-terminus
 c_termini_extension = None  # Number of residues to extend the redesign segment at the C-terminus. If None, it will extend to the end of the chain.
@@ -110,6 +111,7 @@ top_n_mpnn_candidates= 5
 ### ESM
 path_to_ESM_env='/home/eduardo/miniforge3/envs/esm_fold_env'
 path_to_ESM_script='/home/eduardo/allostery/strategy_1/esm_high_throughput.py'
+path_to_ESM_image='/home/eduardo/conda_backups/esmfold_plus.sif'
 
 ### 1D filtering
 filter_1d_window_size = 10
@@ -185,18 +187,20 @@ def save_to_log(message):
 ### MAIN EXECUTION ##############################################################################################################################
 
 ### Generate new pdbs with the new ligand
-
-lowest_energy_conformer =run_ligand_sampling_pipeline(
-        ligand_smiles=args.ligand,
-        structure_path=args.structure,
-        output_path=f"{args.output}/ligand_sampling",
-        num_conformers=num_conformers,
-        num_positions=num_positions,
-        ligand_name=ligand_name, # Keep default or add CLI arg for this,
-        rotation=rotation,
-        translation=translation,
-        conformer_rmsd_cutoff=conformer_rmsd_cutoff
-        )
+if  RF_folder: # If RF_folder is provided, it means we are skipping RF diffusion and using existing designs, so we can skip ligand sampling if the sampled ligand pdbs already exist
+    lowest_energy_conformer = func.generate_conformer(smiles=args.ligand, n=num_conformers, output_dir=f"{args.output}/ligand_sampling")
+else:
+    lowest_energy_conformer =run_ligand_sampling_pipeline(
+            ligand_smiles=args.ligand,
+            structure_path=args.structure,
+            output_path=f"{args.output}/ligand_sampling",
+            num_conformers=num_conformers,
+            num_positions=num_positions,
+            ligand_name=ligand_name, # Keep default or add CLI arg for this,
+            rotation=rotation,
+            translation=translation,
+            conformer_rmsd_cutoff=conformer_rmsd_cutoff
+            )
 
 ### Generate redesign information
 
@@ -232,7 +236,7 @@ pdb_info["redesign_segments"] = segments
 
 ### RF Diffusion module
 
-if not ligand_MPNN_only:
+if not ligand_MPNN_only or not RF_folder:
     if RF_model == "all_atom":
         # Skip if output already exists and is not empty
         if os.path.exists(f"{args.output}/RFallatom_designs") and os.listdir(f"{args.output}/RFallatom_designs"):
@@ -297,6 +301,9 @@ if not ligand_MPNN_only:
 
 if ligand_MPNN_only:
     mpnn_pdb_folder = f"{args.output}/ligand_sampling/final_pdbs"
+elif RF_folder:
+    print(f"Using RF diffusion designs from {RF_folder} as input for Ligand MPNN...")
+    mpnn_pdb_folder = RF_folder
 else:
     mpnn_pdb_folder = f"{args.output}/RF_final_pdbs"
 
@@ -348,7 +355,7 @@ MPNN_df = func.filter_dataframe_1D(MPNN_df,window_size=filter_1d_window_size,thr
 MPNN_df.to_csv(f'{args.output}/MPNN_df.csv')
 ### High throughput structure prediction with ESM fold
 
-func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',path_to_ESM_env=path_to_ESM_env,path_to_ESM_script=path_to_ESM_script)
+func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',path_to_ESM_env=path_to_ESM_env,path_to_ESM_script=path_to_ESM_script,path_to_ESM_image=path_to_ESM_image)
 
 ### First 3D filter (3D quality)
 

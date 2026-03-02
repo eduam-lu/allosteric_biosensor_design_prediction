@@ -14,6 +14,8 @@ import numpy as np
 import biotite.structure as struc
 import biotite.structure.io as bsio
 from biotite.structure.io import load_structure
+from rdkit import Chem
+from rdkit.Chem import AllChem
 import numpy as np
 from tmtools import tm_align
 import shutil
@@ -243,20 +245,22 @@ def define_active_site(pdb_path,user_defined_active_site=None, user_defined_resi
     # If active site already defined, return it. Ensures desired residues remain too
     if user_defined_active_site is not None:
         active_site = user_defined_active_site
+        first_shell = []
+        second_shell = []
         for i in user_defined_residues:
             if i not in active_site:
                 active_site.append(i)
-    
-    # Pymol selection based on distance to ligand
-    first_shell = detect_first_shell(pdb_path, distance=first_shell_distance)
-    second_shell = detect_second_shell(pdb_path, first_shell, distance=second_shell_distance)
-    active_site = first_shell
+    else:
+        # Pymol selection based on distance to ligand
+        first_shell = detect_first_shell(pdb_path, distance=first_shell_distance)
+        second_shell = detect_second_shell(pdb_path, first_shell, distance=second_shell_distance)
+        active_site = first_shell
 
-    # Include user-defined residues
-    if user_defined_residues is not None:
-        for i in user_defined_residues:
-            if i not in active_site:
-                active_site.append(i)
+        # Include user-defined residues
+        if user_defined_residues is not None:
+            for i in user_defined_residues:
+                if i not in active_site:
+                    active_site.append(i)
 
     return {"active_site": active_site,
             "first_shell": first_shell,
@@ -568,6 +572,10 @@ def generate_MPNN_jsons(pdb_folder, output_json,
     if first_shell_only:
         first_shell_list = [f'{chain_id}{res}'for res in first_shell]
         first_shell_string = " ".join(first_shell_list)
+
+    if user_redesign_list:
+        user_list= [f'{chain_id}{res.strip()}' for res in user_redesign_list.split(",")]
+        user_list_string = " ".join(user_list)
     
     # Parse the pdb folder and generate json with pdb paths
     pdb_files = list(Path(pdb_folder).glob("*.pdb"))
@@ -582,7 +590,7 @@ def generate_MPNN_jsons(pdb_folder, output_json,
 
         # multiredesigns
         if first_shell_only:
-            redesigned_residues_dict[str(pdb_file)] = first_shell_list
+            redesigned_residues_dict[str(pdb_file)] = first_shell_string
         else:
             redesigned_residues_dict[str(pdb_file)] = generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A')
 
@@ -713,7 +721,7 @@ def process_MPNN_file(file, top_n, select_by='avg_MPNN_score'):
 
 ### Folding models ###############################################################################################################################
 
-def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script):
+def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script,path_to_ESM_image):
     # 1. Convert to Path object first
     out_path = Path(output_folder)
 
@@ -723,8 +731,11 @@ def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script):
         return
     
     # Prepare command for running the ESM script
-    ESM_command = (
-        f'conda run -p {path_to_ESM_env} python3 -u {path_to_ESM_script} --input_csv {input_csv} --output_folder {output_folder}'
+    #ESM_command = (
+    #    f'conda run -p {path_to_ESM_env} python3 -u {path_to_ESM_script} --input_csv {input_csv} --output_folder {output_folder}'
+    #)
+    ESM_command =(
+        f'singularity exec --nv {path_to_ESM_image} python3 {path_to_ESM_script} --input_csv {input_csv} --output_folder {output_folder}'
     )
     subprocess.run(ESM_command, shell=True, check=True)
     return
@@ -1885,5 +1896,58 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
 
     return df
 
-def second_prediction_joint_df():
-    return
+
+
+def generate_conformer(smiles: str, n: int, output_dir: str) -> str:
+    """
+    Generates n conformers for a given SMILES string, saves them as PDBs,
+    and returns the path to the lowest-energy conformer.
+    
+    Args:
+        smiles (str): The input SMILES string.
+        n (int): Number of conformers to generate.
+        output_dir (str): Directory to save the output PDB files.
+        
+    Returns:
+        str: File path to the lowest energy conformer PDB.
+    """
+    # 1. Setup output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 2. Build molecule and add hydrogens (crucial for accurate 3D structures)
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError("Invalid SMILES string.")
+    mol = Chem.AddHs(mol)
+
+    # 3. Embed conformers into 3D space
+    # randomSeed is set for reproducibility; remove or change it if you want varied results per run
+    conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=n, randomSeed=42)
+    if not conf_ids:
+        raise RuntimeError("Failed to generate conformers.")
+
+    # 4. Optimize geometry and calculate energies using MMFF94 force field
+    # MMFFOptimizeMoleculeConfs returns a list of tuples: (convergence_flag, energy)
+    optimization_results = AllChem.MMFFOptimizeMoleculeConfs(mol, maxIters=1000)
+
+    lowest_energy = float('inf')
+    best_conf_id = -1
+
+    # 5. Identify the lowest energy conformer
+    for i, (not_converged, energy) in enumerate(optimization_results):
+        if energy < lowest_energy:
+            lowest_energy = energy
+            best_conf_id = conf_ids[i]
+
+    best_pdb_path = ""
+
+    # 6. Save all conformers as PDB files
+    for conf_id in conf_ids:
+        file_path = os.path.join(output_dir, f"conformer_{conf_id}.pdb")
+        Chem.MolToPDBFile(mol, file_path, confId=conf_id)
+        
+        # Track the path of the best conformer
+        if conf_id == best_conf_id:
+            best_pdb_path = file_path
+
+    return best_pdb_path
