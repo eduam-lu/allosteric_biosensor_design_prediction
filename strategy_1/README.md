@@ -1,1 +1,1 @@
-# Strategy 1: Minor redesign with Ligand MPNN for  
+# Strategy 1: Allosteric binding pocket redesign
