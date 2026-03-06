@@ -13,16 +13,38 @@ This task is obviously challenging. Despite recent advances in active site engin
 ## Strategies
 ### Strategy 1: Allosteric binding pocket reconstruction
 Found at allosteric_biosensor_design_prediction/strategy_1
-In the simplest case scenario, we propose the redesign
+
+In the simplest case scenario, we propose placing the molecule of interest in the allosteric site of the target protein, and rebuild all the residues found within a sphere of radius X armstrongs with RFdiffusion3, following a sequence recovery step with Ligand MPNN and a high throughput filtering of the candidates.
+
+Through this approach, and by testing different radii and parameters, we expect to find a configuration that can produce candidates whose reconstruction was good enough to fit the new ligand and at the same time, respected the allosteric mechanism.
+
+There are several flaws to this approach however. First, given that allosteric mechanisms are deeply encoded within structures, even small changes in the allosteric site can lead to their complete eradication. Furthermore, some allosteric mechanisms are triggered by the specific chemical properties of the ligand. So even if we managed to fit a new ligand and preserve all the elements of allostery, if the new molecule was not as charged or electronegative as the original, the required structural reorganisation is not possible
 ### Strategy 1 + Snakemake
 Found at allosteric_biosensor_design_prediction/strategy_1_snakemake
 
 ### Strategy 2: Rebuild the C-terminal domain of HTH-like transcription factors
 Found at allosteric_biosensor_design_prediction/strategy_2
 
+The second strategy was then designed to address the flaws of the first one and was built upon the snakemake code for strategy 1. We need allosteric mechanisms that A) are not dependent on the ligand properties and B) are resilient even upon modifying the allosteric site. The HTH (Helix-Turn-Helix) family of TFs and their "hinge-like" allosteric mechanism fully meet those conditions. Allosteric HTH TFs posess independent C and N terminal domains that can move freely and relatively to each other in a hinge-like motion. The allosteric site is found at the intersection of these two domains. Binding of the ligand sterically impedes the hinge like motion, fixating the protein in a state that is either compatible with DNA binding (promoting gene expression) or incompatible with DNA binding (repressing gene expression).
+
+In these systems, allostery is not necessarily hardly encoded in the structure, and the mere presence of the ligand is enough to block the hinge-like motion, regardless of its properties in principle. There are other advantages: because of the independence of the two domains, one of them can be rebuilt around the ligand to generate a proper pocket, leaving the other almost untouched. This gives RFdiffusion a lot more flexibility than in the previous strategy, conditions under which is known to perform better. Also, given the variability found within this family, several chasises can be tested to accomodate ligands of different sizes and properties.
+
+In this strategy, we propose a full redesign around a molecule of interest of C terminal domains of HTH allosteric TFs, followed by sequence recovery by LigandMPNN. Succesful candidates will be selected based on their ability to bind the new ligand but also for their potential to show a hinge-like motion. For prompting this behaviour, we include multi-state design elements in the process, including a multistate version of LigandMPNN that returns sequences accounting for two potential backbones, template conditioning for structure prediction methods and measuring the energy difference between the two potential states.
+
+Apart from the traditional hurdles of de novo protein design, two challenges emerge from this approach:
+- HTH TFs functional version is a homodimer, sometimes even a homotetramer. And although the C termini is not directly involved in allostery, it is involved in dimerization. While reconstructing the C terminal domain, we also need to recover a proper dimerization interface, we account for this in our design process.
+- The DNA binding region structure has been rarely determined crystalographically and is usually not present in PDB structures for these TFs. Although distant for the reconstruction site, this might be a source of error.
+
 ### Strategy 3: De novo generation of allostery through DNA binding domain repositioning
 Found at allosteric_biosensor_design_prediction/strategy_3
 
+Finally, we propose an alternative, fully de novo, strategy for developing novel biosensors. Rather than relying on natural backbones, we propose using an in-house version of RF diffusion (under development by Samuel Sellberg), capable of being conditioned with two protein states, to generate multistate compatible backbones. 
+
+Denoising diffusion models essentially transform Gaussian noise into a denoised system, in this case, a viable protein structure. This denoising process is iterative and can be conditioned by context, for example, by providing a protein region that needs to be included in the final design. Through denoising, the cloud of points adapts to the context to accept it, it gathers information from it. We propose that by exposing the noise to two different contexts throughout denoising, we can generate designs compatible with both. This involves sequentially moving the point cloud between contexts after applying x denoising steps, until the noise collapses in a final structure.
+
+For this project, the contexts consist on a natural DNA binding domain in a DNA binding compatible position and in an incompatible position. Also, the ligand should be present in either of the states, so its presence and absence can also condition the design. From this set up, we obtain to obtain designs with features compatible with both states in a manner regulated by the presence and abscence of the ligand.In other words, we expect to design multi-state backbones where allostery might arise.
+
+This is is a high-risk high-reward approach. This backbone conditioned or conscious redesign is newly developed and would be benchmarked through this project. Also, multistate protein design is levels of magnitude more complicated than traditional protein design. But if successful, this method could be extremely powerful and generalizable. Not only one could fit virtually any molecule of interest, one could also choose the promoter system it regulates by selecting an adequate DNA binding domain.
 
 
 
