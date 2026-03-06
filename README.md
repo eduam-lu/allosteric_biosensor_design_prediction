@@ -12,7 +12,7 @@ This task is obviously challenging. Despite recent advances in active site engin
 - **Strategy 3**: use a in-house modified RFdiffusion version to generate backbones conditioned with two different DNA binding domain states(bound/unbound) and the presence and absence of a ligand. Through this multi-state protein design, we aim to obtain novel switchable backbones that respond to the ligand.
 ## Strategies
 ### Strategy 1: Allosteric binding pocket reconstruction
-Found at [allosteric_biosensor_design_prediction/strategy_1](allosteric_biosensor_design_prediction/strategy_1)
+Found at [Strategy 1 folder](strategy_1/)
 
 In the simplest case scenario, we propose placing the molecule of interest in the allosteric site of the target protein, and rebuild all the residues found within a sphere of radius X armstrongs with RFdiffusion3, following a sequence recovery step with Ligand MPNN and a high throughput filtering of the candidates (Figure 4).
 
@@ -20,7 +20,7 @@ Through this approach, and by testing different radii and parameters, we expect 
 
 There are several flaws to this approach however. First, given that allosteric mechanisms are deeply encoded within structures, even small changes in the allosteric site can lead to their complete eradication. Furthermore, some allosteric mechanisms are triggered by the specific chemical properties of the ligand. So even if we managed to fit a new ligand and preserve all the elements of allostery, if the new molecule was not as charged or electronegative as the original, the required structural reorganisation is not possible
 ### Strategy 1 + Snakemake
-Found at [allosteric_biosensor_design_prediction/strategy_1_snakemake](allosteric_biosensor_design_prediction/strategy_1_snakemake)
+Found at [Strategy 1 + snakemake folder](strategy_1_snakemake/)
 
 RFdiffusion and structure prediction programs are heavily dependent on GPU computing. The code for strategy 1 is designed to work with 1 GPU only, making it linear, slow and inneficient. For that reason, we adapted the code to work as a snakemake pipeline.
 
@@ -28,7 +28,7 @@ Snakemake is a workflow managing system designed to make reproducible analyses a
 
 Additionally, in this step we also divided RF diffusion and sequence recovery together with the posterior processing into sepparate modules. In the following strategies, the RFdiffusion approach will be completely replaced, while the sequence recovery and candidate selection module will be updated with novel functionalities.
 ### Strategy 2: Rebuild the C-terminal domain of HTH-like transcription factors
-Found at [allosteric_biosensor_design_prediction/strategy_2](allosteric_biosensor_design_prediction/strategy_2)
+Found at [Strategy 2 folder](strategy_2/)
 
 The second strategy was then designed to address the flaws of the first one and was built upon the snakemake code for strategy 1. We need allosteric mechanisms that A) are not dependent on the ligand properties and B) are resilient even upon modifying the allosteric site. The HTH (Helix-Turn-Helix) family of TFs and their "hinge-like" allosteric mechanism fully meet those conditions. Allosteric HTH TFs posess independent C and N terminal domains that can move freely and relatively to each other in a hinge-like motion. The allosteric site is found at the intersection of these two domains. Binding of the ligand sterically impedes the hinge like motion, fixating the protein in a state that is either compatible with DNA binding (promoting gene expression) or incompatible with DNA binding (repressing gene expression)(Figure 5).
 
@@ -41,7 +41,7 @@ Apart from the traditional hurdles of de novo protein design, two challenges eme
 - The DNA binding region structure has been rarely determined crystalographically and is usually not present in PDB structures for these TFs. Although distant for the reconstruction site, this might be a source of error.
 
 ### Strategy 3: De novo generation of allostery through DNA binding domain repositioning
-Found at [allosteric_biosensor_design_prediction/strategy_3](allosteric_biosensor_design_prediction/strategy_3)
+Found at [Strategy 3 folder](strategy_3/)
 
 Finally, we propose an alternative, fully de novo, strategy for developing novel biosensors. Rather than relying on natural backbones, we propose using an in-house version of RF diffusion (under development by Samuel Sellberg), capable of being conditioned with two protein states, to generate multistate compatible backbones. 
 
