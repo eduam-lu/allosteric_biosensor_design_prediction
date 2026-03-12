@@ -516,9 +516,9 @@ def generate_redesign_string(pdb_file, original_seq, segments, start_position, c
     start = start_position
     for seg_start, seg_length in segments:
         # Convert 1-based start to 0-based index
-        fixed_motif_seqs.append(original_seq[start-1:seg_start-1])
+        fixed_motif_seqs.append(original_seq[start:seg_start])
         start = seg_start + seg_length
-    fixed_motif_seqs.append(original_seq[start-1:])
+    fixed_motif_seqs.append(original_seq[start:])
 
 
     # 2. Create a mask for the PDB sequence (False = Redesign, True = Fixed)
@@ -528,6 +528,8 @@ def generate_redesign_string(pdb_file, original_seq, segments, start_position, c
     current_search_index = 0
     
     # 3. Find each fixed motif in the PDB sequence sequentially
+    print(original_seq)
+    print(pdb_seq)
     print(fixed_motif_seqs)
     for motif in fixed_motif_seqs:
         print(motif)

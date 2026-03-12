@@ -8,14 +8,11 @@ Binding site redesign is performed through RF diffusion all atom and LigandMPNN.
 
 FLAGS
 
---structure:
+--config: Path to the YAML configuration file with all parameters for the redesign process. See below for details on the expected format of this file.
 
---ligand:
+--output: Path to the output folder where results will be saved. The script will create this folder if it doesn't exist.
 
---output:
-
-
---help:
+--help: Show a brief help message and exit.
 
 WORKFLOW
 
@@ -41,137 +38,208 @@ from pathlib import Path
 import sys
 import os
 import logging
-
-### PARAMS ####################################################################################################################################
-
-### Ligand sampling params
-ligand_smiles = "C[C@@]1([C@H]2C[C@H]3[C@@H](C(=O)C(=C([C@]3(C(=O)C2=C(C4=C1C=CC=C4O)O)O)O)C(=O)N)N(C)C)O"  # SMILES string of the ligand to be sampled
-ligand_name = "Tc"  # Name of the ligand (used in PDB files)
-
-num_conformers = 2  # Number of conformers to generate for the ligand
-num_positions = 1  # Number of different positions to sample for the ligand around the protein
-conformer_rmsd_cutoff = 0.75  # RMSD cutoff for filtering conformers. Anything below this value will be considered redundant.
-
-rotation = 15  # Rotation angle in degrees for exploring ligand placement
-translation = 0.3  # Translation distance in angstroms for exploring ligand placement
-
-# Active site definition params
-first_shell_distance = 5.0  # Distance in angstroms to define the first shell of residues around the ligand
-second_shell_distance = 5.0  # Distance in angstroms to define the second shell of residues around the first shell
-include_second_shell = False  # If true, residues in the second shell will also be included in the redesign
-user_defined_active_site = None  # If provided, this list of residues will be used as the active site instead of calculating one
-user_defined_residues = None  # If provided, the program ensures this list of residues are included in the active site
-
-### Redesign conditions params
-
-ligand_MPNN_only = False  # If true, only the ligandMPNN step will be performed, skipping RF diffusion
-RF_folder = None # If provided, this folder with RF diffusion designs will be used as input for LigandMPNN instead of running RF diffusion. The folder should contain pdb files with the redesigned structures.
-RF_model = "all_atom"  # RF diffusion model to use: "all_atom", "RF1", "RF3"
-
-# RF redesign conditions
-consertative_redesign = False  # If true,residues within a secondary structure element will not be redesigned. Except if they are the first of final residue of the element.NOT IMPLEMENTED YET
-segment_extension = 1  # Number of residues to extend the redesign segment on each side
-n_termini_extension = 1  # Number of residues to extend the redesign segment at the N-terminus
-c_termini_extension = None  # Number of residues to extend the redesign segment at the C-terminus. If None, it will extend to the end of the chain.
-user_defined_contig_map = None  # If provided, this contig map will be used for RF diffusion redesign instead of calculating one based on the structure
-
-
-### RF diffusion execution params
-path_to_RFAA_apptainer ="/home/eduardo/allostery/rf_diffusion_all_atom/rf_se3_diffusion.sif"  # Path to the RF diffusion all atom apptainer image
-path_to_RFAA_script ="/home/eduardo/allostery/rf_diffusion_all_atom/run_inference.py"  # Path to the RF diffusion inference script
-path_to_RFAA_weights ="/home/eduardo/allostery/rf_diffusion_all_atom/RFDiffusionAA_paper_weights.pt"  # Path to the RF diffusion all atom weights file
-path_to_RF1_script= "/home/eduardo/programs/RFdiffusion/scripts/run_inference.py"  # Path to the RF1 inference script
-path_to_RF1_env="/home/sofia/miniforge3/envs/SE3-nvidia" # Path to the environment needed to use RF1
-
-
-num_designs = 1  # Number of designs to generate with RF diffusion
-T = 50  # Number of diffusion steps to use in RF diffusion
-RFAA_ligand_name = "UNL"  # Name of the ligand to be used in
-design_startnum = 1  # Starting number for design numbering
-deterministic = True  # If true, RF diffusion will run in deterministic mode for reproducibility
-
-### Ligand MPNN execution params
-path_to_ligand_MPNN_script= "/home/eduardo/LigandMPNN/run.py"  # Path to the Ligand MPNN script 
-path_to_ligand_MPNN_env= "/home/eduardo/miniforge3/envs/ligandmpnn_env"  # Path to the environment needed to use Ligand MPNN
-mpnn_model_type= "ligand_mpnn"  # Type of Ligand MPNN model to use: "base" or "large" 
-path_to_mpnn_model = "/home/eduardo/LigandMPNN/model_params/ligandmpnn_v_32_010_25.pt"
-
-MPNN_num_designs = 10  # Number of designs to generate with Ligand MPNN per input structure
-n_batches = 1  # Number of batches to split the MPNN designs into
-mpnn_temperature= 0.05  # Sampling temperature for Ligand MPNN 
-bias_aa_global= None  # Global amino acid bias for Ligand MPNN
-omit_aa_global= None  # Global amino acids to omit for Ligand MPNN
-side_chain_context = 0  # 0 or 1, Ligand MPNN will use side chain context information during design
-first_shell_only = False  # If true, only residues in the first shell will be redesigned by Ligand MPNN
-
-user_defined_mpnn_redesign = None  # If provided, this list of residues will be used as the redesign list for Ligand MPNN
-
-top_n_mpnn_candidates= 5
-
-### ESM
-path_to_ESM_env='/home/eduardo/miniforge3/envs/esm_fold_env'
-path_to_ESM_script='/home/eduardo/allostery/strategy_1/esm_high_throughput.py'
-path_to_ESM_image='/home/eduardo/conda_backups/esmfold_plus.sif'
-
-### 1D filtering
-filter_1d_window_size = 10
-filter_1d_treshold = 10
-
-### First 3D filtering
-clash_distance = 2.0
-bond_distance = 1.2
-MIN_PLDDT_1 = 0.8
-MIN_RMSD_1 = 0.5
-MAX_RMSD_1 = 10
-MAX_CLASHES_1 = 1.01
-global_score_weights = {"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2}
-top_n_score_ESM = 10
-top_n_gnina_ESM = 9
-
-### GNINA params
-gnina_path="gnina"
-gnina_cnn="crossdock_default2018"
-gnina_exhaustiveness=8
-gnina_autobox_add=4
-
-### Second prediction round
-model_flag="CHAI"  # "CHAI" or "AF3" or "BOLTZ_ONLY"
-msa_flag=False  # If true, MSAs will be used during prediction
-
-# Boltz params
-# Boltz specific parameters
- 
-max_dist=5.0
-use_msa_boltz=True
-use_forces=True
-no_kernels=True
-path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz"
-devices=1 
-recycling_steps=3
-sampling_steps=100 
-diffusion_samples=1 
-output_format='pdb' 
-sampling_steps_affinity=100
-binding_pocket = None #[60, 64, 67, 82, 86, 100, 103, 104, 105, 109, 112, 113, 116, 117, 131, 134, 137, 138]
-
-# Final filtering
-top_n_score_final = 5
-top_n_gnina_final = 2
+import yaml
 
 ### INPUT CHECK ###############################################################################################################################
-
 parser = argparse.ArgumentParser(
     description="Binding Site Designer: Redesign binding sites around a new ligand using RF diffusion and LigandMPNN",
 )
-parser.add_argument('--structure', help="Path to the input structure file (PDB format)", type=str, required=True)
-parser.add_argument('--ligand', help="SMILES string of the ligand to be sampled", type=str, required=True)
 parser.add_argument('--output', help="Path to the output folder where results will be saved", type=str, required=True)
+parser.add_argument('--config', help="Path to the YAML configuration file", type=str, required=True)
 parser.add_argument('--detailed-help', action='store_true', help="Show detailed help message and exit")
 
 args = parser.parse_args()
 
 # Generate output directory if it doesn't exist
 Path(args.output).mkdir(parents=True, exist_ok=True)
+
+### LOAD PARAMS FROM CONFIG ####################################################################################################################
+
+with open(args.config, 'r') as file:
+    config = yaml.safe_load(file)
+
+### Basic params
+# - structure: Path to the input structure file (PDB format)
+# - ligand_smiles: SMILES string of the ligand to be sampled
+# - ligand_name: Name of the ligand (used in PDB files)
+structure_path = config.get('structure_path')
+ligand_smiles = config.get('ligand_smiles')
+ligand_name = config.get('ligand_name', "Tc")
+
+### Ligand sampling params
+# - num_conformers: Number of conformers to generate for the ligand
+# - num_positions: Number of different positions to sample for the ligand around the protein
+# - conformer_rmsd_cutoff: RMSD cutoff for filtering conformers. Anything below this value will be considered redundant
+# - rotation: Rotation angle in degrees for exploring ligand placement
+# - translation: Translation distance in angstroms for exploring ligand placement
+num_conformers = config.get('num_conformers', 2)
+num_positions = config.get('num_positions', 1)
+conformer_rmsd_cutoff = config.get('conformer_rmsd_cutoff', 0.75)
+rotation = config.get('rotation', 15)
+translation = config.get('translation', 0.3)
+
+### Active site definition params
+# - first_shell_distance: Distance in angstroms to define the first shell of residues around the ligand
+# - second_shell_distance: Distance in angstroms to define the second shell of residues around the first shell
+# - include_second_shell: If true, residues in the second shell will also be included in the redesign
+# - user_defined_active_site: If provided, this list of residues will be used as the active site instead of calculating one
+# - user_defined_residues: If provided, the program ensures this list of residues are included in the active site
+first_shell_distance = config.get('first_shell_distance', 5.0)
+second_shell_distance = config.get('second_shell_distance', 5.0)
+include_second_shell = config.get('include_second_shell', False)
+user_defined_active_site = config.get('user_defined_active_site', None)
+user_defined_residues = config.get('user_defined_residues', None)
+
+### Redesign conditions params
+# - ligand_MPNN_only: If true, only the ligandMPNN step will be performed, skipping RF diffusion
+# - RF_folder: If provided, this folder with RF diffusion designs will be used as input for LigandMPNN instead of running RF diffusion
+# - RF_model: RF diffusion model to use ("all_atom", "RF1", "RF3")
+# - consertative_redesign: If true, residues within a secondary structure element will not be redesigned. Except if they are the first or final residue of the element (NOT IMPLEMENTED YET)
+# - segment_extension: Number of residues to extend the redesign segment on each side
+# - n_termini_extension: Number of residues to extend the redesign segment at the N-terminus
+# - c_termini_extension: Number of residues to extend the redesign segment at the C-terminus. If None, it will extend to the end of the chain
+# - user_defined_contig_map: If provided, this contig map will be used for RF diffusion redesign instead of calculating one
+ligand_MPNN_only = config.get('ligand_MPNN_only', False)
+RF_folder = config.get('RF_folder', None)
+RF_model = config.get('RF_model', "all_atom")
+consertative_redesign = config.get('consertative_redesign', False)
+segment_extension = config.get('segment_extension', 1)
+n_termini_extension = config.get('n_termini_extension', 1)
+c_termini_extension = config.get('c_termini_extension', None)
+user_defined_contig_map = config.get('user_defined_contig_map', None)
+
+### RF diffusion execution params
+# - path_to_RFAA_apptainer: Path to the RF diffusion all atom apptainer image
+# - path_to_RFAA_script: Path to the RF diffusion inference script
+# - path_to_RFAA_weights: Path to the RF diffusion all atom weights file
+# - path_to_RF1_script: Path to the RF1 inference script
+# - path_to_RF1_env: Path to the environment needed to use RF1
+# - num_designs: Number of designs to generate with RF diffusion
+# - T: Number of diffusion steps to use in RF diffusion
+# - RFAA_ligand_name: Name of the ligand to be used in RFAA
+# - design_startnum: Starting number for design numbering
+# - deterministic: If true, RF diffusion will run in deterministic mode for reproducibility
+path_to_RFAA_apptainer = config.get('path_to_RFAA_apptainer')
+path_to_RFAA_script = config.get('path_to_RFAA_script')
+path_to_RFAA_weights = config.get('path_to_RFAA_weights')
+path_to_RF1_script = config.get('path_to_RF1_script')
+path_to_RF1_env = config.get('path_to_RF1_env')
+num_designs = config.get('num_designs', 1)
+T = config.get('T', 50)
+RFAA_ligand_name = config.get('RFAA_ligand_name', "UNL")
+design_startnum = config.get('design_startnum', 1)
+deterministic = config.get('deterministic', True)
+
+### Ligand MPNN execution params
+# - path_to_ligand_MPNN_script: Path to the Ligand MPNN script
+# - path_to_ligand_MPNN_env: Path to the environment needed to use Ligand MPNN
+# - mpnn_model_type: Type of Ligand MPNN model to use ("base" or "ligand_mpnn")
+# - path_to_mpnn_model: Path to the ligand MPNN model weights
+# - MPNN_num_designs: Number of designs to generate with Ligand MPNN per input structure
+# - n_batches: Number of batches to split the MPNN designs into
+# - mpnn_temperature: Sampling temperature for Ligand MPNN
+# - bias_aa_global: Global amino acid bias for Ligand MPNN
+# - omit_aa_global: Global amino acids to omit for Ligand MPNN
+# - side_chain_context: 0 or 1, Ligand MPNN will use side chain context information during design
+# - first_shell_only: If true, only residues in the first shell will be redesigned by Ligand MPNN
+# - user_defined_mpnn_redesign: If provided, this list of residues will be used as the redesign list for Ligand MPNN
+# - top_n_mpnn_candidates: Number of top MPNN sequence designs to keep and evaluate
+path_to_ligand_MPNN_script = config.get('path_to_ligand_MPNN_script')
+path_to_ligand_MPNN_env = config.get('path_to_ligand_MPNN_env')
+mpnn_model_type = config.get('mpnn_model_type', "ligand_mpnn")
+path_to_mpnn_model = config.get('path_to_mpnn_model')
+MPNN_num_designs = config.get('MPNN_num_designs', 10)
+n_batches = config.get('n_batches', 1)
+mpnn_temperature = config.get('mpnn_temperature', 0.05)
+bias_aa_global = config.get('bias_aa_global', None)
+omit_aa_global = config.get('omit_aa_global', None)
+side_chain_context = config.get('side_chain_context', 0)
+first_shell_only = config.get('first_shell_only', False)
+user_defined_mpnn_redesign = config.get('user_defined_mpnn_redesign', None)
+top_n_mpnn_candidates = config.get('top_n_mpnn_candidates', 5)
+
+### ESM
+# - path_to_ESM_env: Path to the ESM fold environment
+# - path_to_ESM_script: Path to the high throughput ESM folding python script
+# - path_to_ESM_image: Path to the ESM fold apptainer/singularity image
+path_to_ESM_env = config.get('path_to_ESM_env')
+path_to_ESM_script = config.get('path_to_ESM_script')
+path_to_ESM_image = config.get('path_to_ESM_image')
+
+### 1D filtering
+# - filter_1d_window_size: Window size for detecting single-amino acid repeats (like Poly-A or Poly-E)
+# - filter_1d_treshold: Threshold amount of repeating amino acids to trigger filtering a sequence
+filter_1d_window_size = config.get('filter_1d_window_size', 10)
+filter_1d_treshold = config.get('filter_1d_treshold', 10)
+
+### First 3D filtering
+# - clash_distance: Distance threshold (Angstroms) to consider two atoms clashing
+# - bond_distance: Distance threshold (Angstroms) to consider two atoms bonded
+# - MIN_PLDDT_1: Minimum average pLDDT score required to pass the first filter
+# - MIN_RMSD_1: Minimum RMSD to ensure the design has structurally diverged enough from the original
+# - MAX_RMSD_1: Maximum RMSD to ensure the design hasn't lost overall structural integrity
+# - MAX_CLASHES_1: Maximum allowable clashes per atom in the folded structure
+# - global_score_weights: Weights applied to metrics to calculate the global ranking score
+# - top_n_score_ESM: Number of top designs to keep based on the calculated ESM global score
+# - top_n_gnina_ESM: Number of top designs to keep based on GNINA docking scores
+clash_distance = config.get('clash_distance', 2.0)
+bond_distance = config.get('bond_distance', 1.2)
+MIN_PLDDT_1 = config.get('MIN_PLDDT_1', 0.8)
+MIN_RMSD_1 = config.get('MIN_RMSD_1', 0.5)
+MAX_RMSD_1 = config.get('MAX_RMSD_1', 10)
+MAX_CLASHES_1 = config.get('MAX_CLASHES_1', 1.01)
+global_score_weights = config.get('global_score_weights', {"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2})
+top_n_score_ESM = config.get('top_n_score_ESM', 10)
+top_n_gnina_ESM = config.get('top_n_gnina_ESM', 9)
+
+### GNINA params
+# - gnina_path: Command or path to execute gnina
+# - gnina_cnn: CNN scoring model to use in gnina
+# - gnina_exhaustiveness: Exhaustiveness of the global search
+# - gnina_autobox_add: Padding added around the ligand to define the autobox for docking
+gnina_path = config.get('gnina_path', "gnina")
+gnina_cnn = config.get('gnina_cnn', "crossdock_default2018")
+gnina_exhaustiveness = config.get('gnina_exhaustiveness', 8)
+gnina_autobox_add = config.get('gnina_autobox_add', 4)
+
+### Second prediction round
+# - model_flag: Prediction model to use ("CHAI", "AF3", or "BOLTZ_ONLY")
+# - msa_flag: If true, MSAs will be used during structure prediction
+model_flag = config.get('model_flag', "CHAI")
+msa_flag = config.get('msa_flag', False)
+
+### Boltz params
+# - max_dist: Maximum distance threshold for Boltz prediction
+# - use_msa_boltz: If true, uses MSAs during Boltz prediction
+# - use_forces: If true, physical forces are applied in Boltz
+# - no_kernels: Flag to disable custom kernels in Boltz
+# - path_to_boltz_env: Path to the environment needed to use Boltz
+# - devices: Number of GPU devices to use for Boltz
+# - recycling_steps: Number of recycling iterations for structure prediction
+# - sampling_steps: Number of standard sampling steps
+# - diffusion_samples: Number of diffusion samples to generate
+# - output_format: Output format for the final structures ('pdb', 'cif', etc.)
+# - sampling_steps_affinity: Number of sampling steps used specifically for affinity calculation
+# - binding_pocket: List of residues defining the binding pocket
+max_dist = config.get('max_dist', 5.0)
+use_msa_boltz = config.get('use_msa_boltz', True)
+use_forces = config.get('use_forces', True)
+no_kernels = config.get('no_kernels', True)
+path_to_boltz_env = config.get('path_to_boltz_env')
+devices = config.get('devices', 1)
+recycling_steps = config.get('recycling_steps', 3)
+sampling_steps = config.get('sampling_steps', 100)
+diffusion_samples = config.get('diffusion_samples', 1)
+output_format = config.get('output_format', 'pdb')
+sampling_steps_affinity = config.get('sampling_steps_affinity', 100)
+binding_pocket = config.get('binding_pocket', None)
+
+### Final filtering
+# - top_n_score_final: Number of designs to be selected after the final round of filtering based on structural scores
+# - top_n_gnina_final: Number of designs to be selected after the final round of filtering based on GNINA scores
+top_n_score_final = config.get('top_n_score_final', 5)
+top_n_gnina_final = config.get('top_n_gnina_final', 2)
+
 
 ### SET UP LOG FILE #############################################################################################################################
 logging.basicConfig(
@@ -188,11 +256,11 @@ def save_to_log(message):
 
 ### Generate new pdbs with the new ligand
 if  RF_folder: # If RF_folder is provided, it means we are skipping RF diffusion and using existing designs, so we can skip ligand sampling if the sampled ligand pdbs already exist
-    lowest_energy_conformer = func.generate_conformer(smiles=args.ligand, n=num_conformers, output_dir=f"{args.output}/ligand_sampling")
+    lowest_energy_conformer = func.generate_conformer(smiles=ligand_smiles, n=num_conformers, output_dir=f"{args.output}/ligand_sampling")
 else:
     lowest_energy_conformer =run_ligand_sampling_pipeline(
-            ligand_smiles=args.ligand,
-            structure_path=args.structure,
+            ligand_smiles=ligand_smiles,
+            structure_path=structure_path,
             output_path=f"{args.output}/ligand_sampling",
             num_conformers=num_conformers,
             num_positions=num_positions,
@@ -204,7 +272,7 @@ else:
 
 ### Generate redesign information
 
-pdb_info, printable_pdb_info = func.extract_pdb_info(pdb_path=args.structure,first_shell_distance=first_shell_distance,
+pdb_info, printable_pdb_info = func.extract_pdb_info(pdb_path=structure_path,first_shell_distance=first_shell_distance,
                                  second_shell_distance=second_shell_distance,
                                  user_defined_active_site=user_defined_active_site,
                                  user_defined_residues=user_defined_residues)
@@ -359,7 +427,7 @@ func.run_ESMfold(f'{args.output}/MPNN_df.csv',f'{args.output}/ESM_predictions/',
 
 ### First 3D filter (3D quality)
 
-ESM_df = func.threed_params_1_df(folder=f'{args.output}/ESM_predictions/', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+ESM_df = func.threed_params_1_df(folder=f'{args.output}/ESM_predictions/', original_path=structure_path, clash_distance=clash_distance, bond_distance=bond_distance,
                                  ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
                                  output_folder=f"{args.output}",
                                  output_name='ESM_filtered_df.csv',
@@ -398,7 +466,7 @@ boltz_df = func.second_prediction_round(
 
 ### Second 3D filter (3D quality and pocket metrics)
 # Regular prediction
-second_prediction_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_prediction_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+second_prediction_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_prediction_pdbs', original_path=structure_path, clash_distance=clash_distance, bond_distance=bond_distance,
                                  ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
                                  output_folder=f"{args.output}",
                                  output_name=f'{model_flag}_predictions.csv',
@@ -409,7 +477,7 @@ second_prediction_df = func.threed_params_1_df(folder=f'{args.output}/{model_fla
 second_prediction_df.to_csv(f'{args.output}/{model_flag}_predictions.csv')
 
 # Cofold prediction
-second_prediction_cofold_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_cofold_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+second_prediction_cofold_df = func.threed_params_1_df(folder=f'{args.output}/{model_flag}_pdbs/{model_flag}_cofold_pdbs', original_path=structure_path, clash_distance=clash_distance, bond_distance=bond_distance,
                                  ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
                                  output_folder=f"{args.output}",
                                  output_name=f'{model_flag}_cofold_predictions.csv',
@@ -428,7 +496,7 @@ second_prediction_cofold_df = func.check_cofold_validity(
 
 second_prediction_cofold_df.to_csv(f'{args.output}/{model_flag}_cofold_predictions.csv')
 # Boltz prediction
-boltz_prediction_df = func.threed_params_1_df(folder=f'{args.output}/BOLTZ_pdbs', original_path=args.structure, clash_distance=clash_distance, bond_distance=bond_distance,
+boltz_prediction_df = func.threed_params_1_df(folder=f'{args.output}/BOLTZ_pdbs', original_path=structure_path, clash_distance=clash_distance, bond_distance=bond_distance,
                                  ligand_path=lowest_energy_conformer, # I select lowest energy conformer as an assumption
                                  output_folder=f"{args.output}",
                                  output_name=f'BOLTZ_predictions.csv',
