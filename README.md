@@ -10,6 +10,8 @@ This task is obviously challenging. Despite recent advances in active site engin
 - **Strategy 1**: rebuild the protein around a sphere centred around the bound ligand using RFdifussion3 and LigandMPNN followed by a strict filtering process
 - **Strategy 2**: rebuild the whole C terminal domain of HTH-like transcription factors, taking advantage of their hinge-like allosteric mechanism
 - **Strategy 3**: use a in-house modified RFdiffusion version to generate backbones conditioned with two different DNA binding domain states(bound/unbound) and the presence and absence of a ligand. Through this multi-state protein design, we aim to obtain novel switchable backbones that respond to the ligand.
+
+![Figure 3. Strategy showcase](img/Figure 3.png)
 ## Strategies
 ### Strategy 1: Allosteric binding pocket reconstruction
 Found at [Strategy 1 folder](strategy_1/)
