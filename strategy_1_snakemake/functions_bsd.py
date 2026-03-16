@@ -954,41 +954,68 @@ def boltz_yaml_generator(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.
     seq = row['sequence']
     
     # Constructing the dictionary structure
-    yaml_data = {
-        "version": 1,
-        "sequences": [
-            {
-                "protein": {
-                    "id": "A",
-                    "sequence": seq,
-                    "msa": "empty"  
+    if pocket_list:
+        yaml_data = {
+            "version": 1,
+            "sequences": [
+                {
+                    "protein": {
+                        "id": "A",
+                        "sequence": seq,
+                        "msa": "empty"  
+                    }
+                },
+                {
+                    "ligand": {
+                        "id": "B",
+                        "smiles": ligand_smiles
+                    }
                 }
-            },
-            {
-                "ligand": {
-                    "id": "B",
-                    "smiles": ligand_smiles
+            ],
+            "constraints": [
+                {
+                    "pocket": {
+                        "binder": "A",  # Defining the pocket on the Protein (A)
+                        "contacts": pocket_list,
+                        "max_distance": max_dist,
+                        "force": False
+                    }
                 }
-            }
-        ],
-        "constraints": [
-            {
-                "pocket": {
-                    "binder": "A",  # Defining the pocket on the Protein (A)
-                    "contacts": pocket_list,
-                    "max_distance": max_dist,
-                    "force": False
+            ],
+            "properties": [
+                {
+                    "affinity": {
+                        "binder": "B"  # Calculate affinity for the Ligand (B)
+                    }
                 }
-            }
-        ],
-        "properties": [
-            {
-                "affinity": {
-                    "binder": "B"  # Calculate affinity for the Ligand (B)
+            ]
+        }
+    else:
+        yaml_data = {
+            "version": 1,
+            "sequences": [
+                {
+                    "protein": {
+                        "id": "A",
+                        "sequence": seq,
+                        "msa": "empty"  
+                    }
+                },
+                {
+                    "ligand": {
+                        "id": "B",
+                        "smiles": ligand_smiles
+                    }
                 }
-            }
-        ]
-    }
+            ],
+            "properties": [
+                {
+                    "affinity": {
+                        "binder": "B"  # Calculate affinity for the Ligand (B)
+                    }
+                }
+            ]
+        }
 
     # Ensure output directory exists
     os.makedirs(yaml_path, exist_ok=True)
@@ -1484,7 +1511,7 @@ def threed_params_1_df(folder, output_folder,output_name, original_path, clash_d
     folder = Path(folder)
     for file in folder.iterdir():
         file_path = str(file)
-        if not file_path.endswith(".json"):
+        if file_path.endswith(".pdb") or file_path.endswith(".cif"):
             # pLDDT
             pLDDT_mean,pLDDT_stdev= extract_plddt(file_path)
             # RMSD
