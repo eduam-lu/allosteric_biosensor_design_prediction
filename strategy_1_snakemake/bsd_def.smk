@@ -4,13 +4,16 @@
 import os
 import pandas as pd
 from pathlib import Path
+import shutil
 
 # Import your custom functions directly
 import functions_bsd as func
+from ligand_sampling import sample_conformers 
 # -----------------------------------------------------------------------------
 # PARAMETERS
 # -----------------------------------------------------------------------------
-
+GPUS = config.get("gpus", 4)
+SPLIT_IDS = [str(i) for i in range(GPUS)]
 ### Ligand MPNN execution params
 # - path_to_ligand_MPNN_script: Path to the Ligand MPNN script
 # - path_to_ligand_MPNN_env: Path to the environment needed to use Ligand MPNN
@@ -38,8 +41,7 @@ side_chain_context = config.get('side_chain_context', 0)
 first_shell_only = config.get('first_shell_only', False)
 user_defined_mpnn_redesign = config.get('user_defined_mpnn_redesign', None)
 top_n_mpnn_candidates = config.get('top_n_mpnn_candidates', 5)
-MPNN_GPUS = config.get("mpnn_gpus", 4)
-SPLIT_IDS = [str(i) for i in range(MPNN_GPUS)]
+
 
 ### ESM
 # - path_to_ESM_env: Path to the ESM fold environment
@@ -275,7 +277,7 @@ rule split_esm_csv:
     input:
         mpnn_filtered_csv = rules.process_mpnn_output_and_filter.output.mpnn_filtered_csv
     output:
-        split_csvs = expand(f"{OUTPUT_DIR}/ESM_predictions/split_{{split_id}}/input.csv", split_id=ESM_SPLIT_IDS)
+        split_csvs = expand(f"{OUTPUT_DIR}/ESM_predictions/split_{{split_id}}/input.csv", split_id=SPLIT_IDS)
     run:
         import numpy as np
         
@@ -320,7 +322,7 @@ rule run_esmfold_hybrid:
 # to loop through multiple directories.
 rule gather_esm_pdbs:
     input:
-        esm_dirs = expand(f"{OUTPUT_DIR}/ESM_predictions/split_{{split_id}}/pdbs", split_id=ESM_SPLIT_IDS)
+        esm_dirs = expand(f"{OUTPUT_DIR}/ESM_predictions/split_{{split_id}}/pdbs", split_id=SPLIT_IDS)
     output:
         gathered_dir = directory(f"{OUTPUT_DIR}/ESM_predictions/all_pdbs")
     run:
@@ -343,30 +345,96 @@ rule gather_esm_pdbs:
 # First, we will calculate the 3D parameters for all ESMfold predictions. Then, we will apply a 3D filter to select survivors. 
 #Finally, we will run GNINA on the survivors to get binding scores and filter by that as well. 
 # The final output of this checkpoint will be a csv with the survivors and their scores, which will be the input for the next phase.
+rule sample_best_conformer:
+    output:
+        # Define a static, predictable file name for Snakemake's DAG
+        best_pdb = f"{OUTPUT_DIR}/best_conformer.pdb",
+        # Track the stats file to ensure the conformers were actually generated
+        stats = f"{OUTPUT_DIR}/ligand_prep/conformers/conformer_stats.csv"
+    params:
+        smiles = ligand_smiles,
+        out_dir = f"{OUTPUT_DIR}/ligand_prep",
+        n_confs = 50, # Optional: Increase sampling for a better starting structure
+        rmsd_cutoff = 0.75,
+        ligand_name = "Tc"
+    run:
+        # 1. Run the function. It returns the path to the best conformer 
+        # (e.g., "outputs/ligand_prep/conformers/Tc_conf_3.pdb")
+        best_conformer_path = func.sample_conformers(
+            molecule=params.smiles,
+            n_conformers=params.n_confs,
+            rmsd_cutoff=params.rmsd_cutoff,
+            output=params.out_dir,
+            ligand_name=params.ligand_name
+        )
+        
+        # 2. Copy that specific best conformer to the static output path expected by Snakemake
+        shutil.copy(best_conformer_path, output.best_pdb)
+        
+        print(f"Lowest energy conformer ({best_conformer_path}) copied to: {output.best_pdb}")
 
-checkpoint first_3d_filter:
+rule split_esm_pdbs:
     input:
         esm_dir = rules.gather_esm_pdbs.output.gathered_dir
     output:
-        survivors_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
+        # Create a directory for each batch
+        batch_dirs = directory([f"{OUTPUT_DIR}/checkpoints/batches/batch_{i}" for i in SPLIT_IDS])
     run:
-        # Using your global Python variables
-        esm_df = func.threed_params_1_df(
-            folder=input.esm_dir, 
-            output_folder=f"{OUTPUT_DIR}/checkpoints",
-            output_name="ESM_metrics.csv", 
+        import glob
+        import shutil
+        from pathlib import Path
+        
+        # Get all pdbs
+        pdb_files = glob.glob(f"{input.esm_dir}/*.pdb")
+        
+        # Ensure directories exist
+        for d in output.batch_dirs:
+            Path(d).mkdir(parents=True, exist_ok=True)
+            
+        # Distribute files evenly using modulo
+        for i, file_path in enumerate(pdb_files):
+            batch_idx = i % N_BATCHES
+            dest = f"{output.batch_dirs[batch_idx]}/{Path(file_path).name}"
+            shutil.copy(file_path, dest)
+
+rule process_esm_batch:
+    input:
+        batch_dir = f"{OUTPUT_DIR}/checkpoints/batches/batch_{{split_id}}",
+        best_ligand_pdb = rules.sample_best_conformer.output.best_pdb
+    output:
+        batch_csv = f"{OUTPUT_DIR}/checkpoints/batches/ESM_metrics_{{split_id}}.csv"
+    resources:
+        gpu = 1 # Reserve 1 GPU for this specific batch
+    run:
+        # Run your existing function on this specific smaller folder
+        func.threed_params_1_df(
+            folder=input.batch_dir, 
+            output_folder=f"{OUTPUT_DIR}/checkpoints/batches",
+            output_name=f"ESM_metrics_{wildcards.split_id}.csv", 
             original_path=structure_path, 
             clash_distance=clash_distance, 
             bond_distance=bond_distance,
-            ligand_path=ligand_smiles, 
+            ligand_path=input.best_ligand_pdb, 
             gnina_path=gnina_path,
             cnn=gnina_cnn,
             exhaustiveness=gnina_exhaustiveness,
             autobox_add=gnina_autobox_add
         )
+
+checkpoint first_3d_filter:
+    input:
+        # Request all the batch CSVs generated by the process rule
+        batch_csvs = expand(f"{OUTPUT_DIR}/checkpoints/batches/ESM_metrics_{{split_id}}.csv", split_id=SPLIT_IDS)
+    output:
+        survivors_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
+    run:
+        # 1. Combine all the batch DataFrames into one
+        df_list = [pd.read_csv(csv) for csv in input.batch_csvs]
+        combined_esm_df = pd.concat(df_list, ignore_index=True)
         
+        # 2. Run the filtering function on the combined DataFrame
         filtered_df = func.threed_filter_1_df(
-            df=esm_df, 
+            df=combined_esm_df, 
             output_folder=f"{OUTPUT_DIR}/checkpoints", 
             weights=global_score_weights, 
             min_plddt=MIN_PLDDT_1, 
@@ -376,8 +444,9 @@ checkpoint first_3d_filter:
             top_n_score=top_n_score_ESM,
             top_n_gnina=top_n_gnina_ESM
         )
+        
+        # 3. Save the final output
         filtered_df.to_csv(output.survivors_csv, index=False)
-
 
 # Helper function to dynamically read the checkpoint output
 def get_survivor_ids(wildcards):

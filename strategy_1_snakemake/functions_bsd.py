@@ -14,7 +14,7 @@ import numpy as np
 import biotite.structure as struc
 import biotite.structure.io as bsio
 from biotite.structure.io import load_structure
-import numpy as np
+
 from tmtools import tm_align
 import shutil
 import pandas as pd
@@ -22,6 +22,11 @@ import re
 from pymol import cmd 
 from pathlib import Path
 import subprocess
+import math
+from scipy import stats
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import seaborn as sns
 
 
 
@@ -1655,6 +1660,177 @@ def threed_filter_2_df(df_list, output_folder,output_names, weights, min_plddt=0
 
     return 
 
+### VISUALIZATION #######################################################################################################################################
+def count_designs_in_region(df, x_col, y_col, x_range, y_range):
+    """
+    Counts the number of points (designs) falling within the specified rectangle.
+    """
+    mask = (
+        (df[x_col] >= x_range[0]) & (df[x_col] <= x_range[1]) &
+        (df[y_col] >= y_range[0]) & (df[y_col] <= y_range[1])
+    )
+    return int(mask.sum())
+
+def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim=None):
+    """
+    Plots a scatter plot, overlays a rectangle, and displays the count of designs within.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # 1. Create the scatter plot
+    ax.scatter(df[x_col], df[y_col], alpha=0.6, label='Data Points')
+    
+    # 2. Calculate rectangle parameters
+    width = x_range[1] - x_range[0]
+    height = y_range[1] - y_range[0]
+    
+    # 3. Create the rectangle patch
+    rect = patches.Rectangle(
+        (x_range[0], y_range[0]), 
+        width, height, linewidth=2, 
+        edgecolor='red', facecolor='red', alpha=0.2, label='Target Region'
+    )
+    ax.add_patch(rect)
+    
+    # 4. Count designs and add text box
+    design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
+    text_str = f'Designs in region: {design_count}'
+    props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
+    
+    # transform=ax.transAxes places it relative to the axes (0.05 is 5% from left, 0.95 is 95% from bottom)
+    ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=11,
+            verticalalignment='top', bbox=props)
+    
+    # 5. Apply Axis Limits
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    
+    # Formatting
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(f'Scatter Plot: {x_col} vs {y_col}')
+    ax.legend(loc='upper right') # Moved legend so it doesn't overlap text box
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    plt.show()
+
+def plot_multiple_scatters(df_list, titles, x_col, y_col, x_range, y_range, cols=3, xlim=None, ylim=None):
+    """
+    Creates a grid of subplots, highlighting a target region and counting valid designs.
+    """
+    n = len(df_list)
+    rows = math.ceil(n / cols)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4), constrained_layout=True)
+    
+    if n > 1:
+        axes_flat = axes.flatten()
+    else:
+        axes_flat = [axes]
+
+    rect_width = x_range[1] - x_range[0]
+    rect_height = y_range[1] - y_range[0]
+
+    for i in range(n):
+        ax = axes_flat[i]
+        df = df_list[i]
+        
+        # Plot data
+        ax.scatter(df[x_col], df[y_col], alpha=0.6, s=15)
+        
+        # Add the range patch
+        rect = patches.Rectangle(
+            (x_range[0], y_range[0]), rect_width, rect_height,
+            linewidth=1.5, edgecolor='red', facecolor='red', alpha=0.15
+        )
+        ax.add_patch(rect)
+        
+        # Count designs and add text box
+        design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
+        text_str = f'Valid: {design_count}'
+        props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
+        ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+        
+        # Apply Axis Limits
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        
+        # Labels and Titles
+        ax.set_title(titles[i])
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.grid(True, linestyle=':', alpha=0.6)
+
+    # Hide any unused subplots
+    for j in range(i + 1, len(axes_flat)):
+        axes_flat[j].axis('off')
+
+    plt.show()
+
+def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2):
+    """
+    Plots distribution curves for specific columns across multiple dataframes.
+    
+    df_list: List of pandas DataFrames
+    columns: List of column names to plot
+    df_labels: List of names for the dataframes (for the legend)
+    cols: Number of columns in the subplot grid
+    """
+    # 1. Setup Labels
+    # If the user didn't provide names for the dataframes, generate generic ones
+    if df_labels is None:
+        df_labels = [f'Dataset {i+1}' for i in range(len(df_list))]
+        
+    if len(df_labels) != len(df_list):
+        raise ValueError("Length of df_labels must match length of df_list")
+
+    # 2. Setup Grid
+    n_plots = len(columns)
+    rows = math.ceil(n_plots / cols)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 6, rows * 4), constrained_layout=True)
+    
+    # Flatten axes for easy iteration, handle single plot case
+    if n_plots > 1:
+        axes_flat = axes.flatten()
+    else:
+        axes_flat = [axes]
+
+    # 3. Plotting Loop
+    for i, col_name in enumerate(columns):
+        ax = axes_flat[i]
+        
+        # Iterate through every dataframe and add its curve to the current plot
+        for j, df in enumerate(df_list):
+            # Check if column exists in this dataframe
+            if col_name in df.columns:
+                # dropna is important for KDE calculations
+                sns.kdeplot(
+                    data=df, 
+                    x=col_name, 
+                    label=df_labels[j], 
+                    ax=ax, 
+                    fill=True, 
+                    alpha=0.1
+                )
+        
+        ax.set_title(f'Distribution of {col_name}')
+        ax.set_xlabel(col_name)
+        ax.set_ylabel('Density')
+        ax.legend(title="Data Source")
+        ax.grid(True, linestyle=':', alpha=0.5)
+
+    # 4. Cleanup
+    # Hide empty subplots if the grid is larger than the number of columns requested
+    for k in range(i + 1, len(axes_flat)):
+        axes_flat[k].axis('off')
+        
+    plt.show()
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
 def move_pdbs_to_folder(input_folder, output_folder):
     """
