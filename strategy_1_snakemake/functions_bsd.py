@@ -1671,10 +1671,13 @@ def count_designs_in_region(df, x_col, y_col, x_range, y_range):
     )
     return int(mask.sum())
 
-def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim=None):
+def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim=None, output_file=None):
     """
     Plots a scatter plot, overlays a rectangle, and displays the count of designs within.
     """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    
     fig, ax = plt.subplots(figsize=(8, 6))
     
     # 1. Create the scatter plot
@@ -1693,11 +1696,11 @@ def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim
     ax.add_patch(rect)
     
     # 4. Count designs and add text box
+    # Make sure count_designs_in_region is imported or available!
     design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
     text_str = f'Designs in region: {design_count}'
     props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
     
-    # transform=ax.transAxes places it relative to the axes (0.05 is 5% from left, 0.95 is 95% from bottom)
     ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=11,
             verticalalignment='top', bbox=props)
     
@@ -1711,10 +1714,16 @@ def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
     ax.set_title(f'Scatter Plot: {x_col} vs {y_col}')
-    ax.legend(loc='upper right') # Moved legend so it doesn't overlap text box
+    ax.legend(loc='upper right')
     ax.grid(True, linestyle='--', alpha=0.7)
     
-    plt.show()
+    # Save or Show 
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    else:
+        plt.show()
+        
+    plt.close(fig)
 
 def plot_multiple_scatters(df_list, titles, x_col, y_col, x_range, y_range, cols=3, xlim=None, ylim=None):
     """

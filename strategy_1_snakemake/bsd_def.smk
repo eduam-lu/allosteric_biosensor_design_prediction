@@ -700,3 +700,45 @@ rule gather_final_candidates:
             with open(output.final_summary, 'w') as f:
                 f.write("No sequences survived the final filtering thresholds.\n")
 
+# -----------------------------------------------------------------------------
+# 8. PHASE 7: GENERATE VISUALISATIONS
+# -----------------------------------------------------------------------------
+
+rule plot_plddt_vs_tmscore:
+    input:
+        # Taking one of the batch CSVs, or you can use your combined df 
+        # Assuming you saved a combined CSV before filtering, or just use survivors
+        metrics_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
+    output:
+        # The report() wrapper tells Snakemake to embed this in the HTML report
+        scatter_plot = report(
+            f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png",
+            caption="report/plddt_vs_tmscore.rst", # Text file with a description
+            category="Visualisations",
+            subcategory="ESM 3D Metrics"
+        )
+    run:
+        
+        # Ensure output directory exists
+        Path(output.scatter_plot).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Load the dataframe
+        df = pd.read_csv(input.metrics_csv)
+        
+        # Call your function to generate and SAVE the plot
+        func.plot_scatter_with_region(
+            df=df,
+            x_col="pLDDT_mean",
+            y_col="TMscore",
+            x_range=[MIN_PLDDT_1, 1.0], # Highlight passing pLDDT
+            y_range=[MIN_RMSD_1, 1.0],  # Highlight passing TMscore (adjust range as needed)
+            output_file=output.scatter_plot
+        )
+        
+        caption_text = (
+            "Scatter plot showing the distribution of **pLDDT mean** vs **TMscore**.\n\n"
+            "The highlighted red rectangle shows the target region of designs that "
+            "passed the physical thresholds (high confidence folding and good structural alignment)."
+        )
+        with open(output.caption_file, "w") as f:
+            f.write(caption_text)
