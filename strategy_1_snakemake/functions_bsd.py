@@ -1782,7 +1782,7 @@ def plot_multiple_scatters(df_list, titles, x_col, y_col, x_range, y_range, cols
 
     plt.show()
 
-def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2):
+def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2, output_file=None):
     """
     Plots distribution curves for specific columns across multiple dataframes.
     
@@ -1790,9 +1790,13 @@ def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2):
     columns: List of column names to plot
     df_labels: List of names for the dataframes (for the legend)
     cols: Number of columns in the subplot grid
+    output_file: Path to save the image for Snakemake
     """
+    import math
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
     # 1. Setup Labels
-    # If the user didn't provide names for the dataframes, generate generic ones
     if df_labels is None:
         df_labels = [f'Dataset {i+1}' for i in range(len(df_list))]
         
@@ -1817,9 +1821,7 @@ def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2):
         
         # Iterate through every dataframe and add its curve to the current plot
         for j, df in enumerate(df_list):
-            # Check if column exists in this dataframe
             if col_name in df.columns:
-                # dropna is important for KDE calculations
                 sns.kdeplot(
                     data=df, 
                     x=col_name, 
@@ -1836,11 +1838,16 @@ def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2):
         ax.grid(True, linestyle=':', alpha=0.5)
 
     # 4. Cleanup
-    # Hide empty subplots if the grid is larger than the number of columns requested
     for k in range(i + 1, len(axes_flat)):
         axes_flat[k].axis('off')
         
-    plt.show()
+    # --- NEW: Save logic for Snakemake ---
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    else:
+        plt.show()
+        
+    plt.close(fig)
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
 def move_pdbs_to_folder(input_folder, output_folder):
     """
