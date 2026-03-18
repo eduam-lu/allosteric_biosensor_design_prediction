@@ -1538,6 +1538,7 @@ def threed_params_1_df(folder, output_folder,output_name, original_path, clash_d
             threed_df.loc[len(threed_df)] = row
 
     print(threed_df.head(5))
+    threed_df.to_csv(f"{output_folder}/{output_name}", index=False)
     return threed_df
 
 def global_score(df, weights={"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2}):

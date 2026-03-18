@@ -14,6 +14,7 @@ from ligand_sampling import sample_conformers
 # -----------------------------------------------------------------------------
 GPUS = config.get("gpus", 4)
 SPLIT_IDS = [str(i) for i in range(GPUS)]
+conformers = config.get("num_conformers", 5)
 ### Ligand MPNN execution params
 # - path_to_ligand_MPNN_script: Path to the Ligand MPNN script
 # - path_to_ligand_MPNN_env: Path to the environment needed to use Ligand MPNN
@@ -148,7 +149,8 @@ RF_DESIGNS, = glob_wildcards(os.path.join(RF_PDB_DIR, "{rf_id}.pdb"))
 # Target rule to drive the DAG
 rule all:
     input:
-        f"{OUTPUT_DIR}/final_scores_topn_filtered.csv"
+        f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv",
+        f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png" # <--- Add this
 # -----------------------------------------------------------------------------
 # 2. PHASE 1: SCATTER LigandMPNN (Parallel on GPUs)
 # -----------------------------------------------------------------------------
@@ -354,13 +356,13 @@ rule sample_best_conformer:
     params:
         smiles = ligand_smiles,
         out_dir = f"{OUTPUT_DIR}/ligand_prep",
-        n_confs = 50, # Optional: Increase sampling for a better starting structure
+        n_confs = conformers, # Optional: Increase sampling for a better starting structure
         rmsd_cutoff = 0.75,
         ligand_name = "Tc"
     run:
         # 1. Run the function. It returns the path to the best conformer 
         # (e.g., "outputs/ligand_prep/conformers/Tc_conf_3.pdb")
-        best_conformer_path = func.sample_conformers(
+        best_conformer_path = sample_conformers(
             molecule=params.smiles,
             n_conformers=params.n_confs,
             rmsd_cutoff=params.rmsd_cutoff,
@@ -393,7 +395,7 @@ rule split_esm_pdbs:
             
         # Distribute files evenly using modulo
         for i, file_path in enumerate(pdb_files):
-            batch_idx = i % N_BATCHES
+            batch_idx = i % len(SPLIT_IDS)
             dest = f"{output.batch_dirs[batch_idx]}/{Path(file_path).name}"
             shutil.copy(file_path, dest)
 
@@ -706,39 +708,47 @@ rule gather_final_candidates:
 
 rule plot_plddt_vs_tmscore:
     input:
-        # Taking one of the batch CSVs, or you can use your combined df 
-        # Assuming you saved a combined CSV before filtering, or just use survivors
         metrics_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
     output:
-        # The report() wrapper tells Snakemake to embed this in the HTML report
+        # Keep the outputs declared so Snakemake tracks them
+        caption_file = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst",
         scatter_plot = report(
             f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png",
-            caption="report/plddt_vs_tmscore.rst", # Text file with a description
+            caption=f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst",
             category="Visualisations",
             subcategory="ESM 3D Metrics"
         )
     run:
+        import pandas as pd
+        from pathlib import Path
+        import functions_bsd as func
+        
+        # --- FIX: Define the paths as plain variables inside the run block ---
+        caption_path = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst"
+        plot_path = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png"
         
         # Ensure output directory exists
-        Path(output.scatter_plot).parent.mkdir(parents=True, exist_ok=True)
+        Path(plot_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # Load the dataframe
-        df = pd.read_csv(input.metrics_csv)
-        
-        # Call your function to generate and SAVE the plot
-        func.plot_scatter_with_region(
-            df=df,
-            x_col="pLDDT_mean",
-            y_col="TMscore",
-            x_range=[MIN_PLDDT_1, 1.0], # Highlight passing pLDDT
-            y_range=[MIN_RMSD_1, 1.0],  # Highlight passing TMscore (adjust range as needed)
-            output_file=output.scatter_plot
-        )
-        
+        # Generate the .rst caption file
         caption_text = (
             "Scatter plot showing the distribution of **pLDDT mean** vs **TMscore**.\n\n"
             "The highlighted red rectangle shows the target region of designs that "
             "passed the physical thresholds (high confidence folding and good structural alignment)."
         )
-        with open(output.caption_file, "w") as f:
+        
+        # Write to the path explicitly
+        with open(caption_path, "w") as f:
             f.write(caption_text)
+            
+        # Generate the Plot
+        df = pd.read_csv(input.metrics_csv)
+        
+        func.plot_scatter_with_region(
+            df=df,
+            x_col="pLDDT_mean",
+            y_col="TMscore",
+            x_range=[MIN_PLDDT_1, 1.0], 
+            y_range=[MIN_RMSD_1, 1.0],  
+            output_file=plot_path  # Pass the explicit path here too
+        )

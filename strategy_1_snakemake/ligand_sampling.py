@@ -63,19 +63,15 @@ translation = 0.3
 def sample_conformers(molecule, n_conformers, rmsd_cutoff, output, ligand_name="lig"):
     output = Path(output)
     out_dir = output / "conformers"
+    stats_file = out_dir / "conformer_stats.csv"
     
-    # Check if conformers already exist
-    if out_dir.exists():
+    # Check if the conformers actually FINISHED generating, not just if the folder exists
+    if stats_file.exists():
         print("Conformers already found. Skipping conformer calculation.")
-        # Try to find the lowest energy one based on previous run logic or just return the first found
-        # For safety, we assume the best one is formatted as expected if it exists
-        stats_file = out_dir / "conformer_stats.csv"
-        if stats_file.exists():
-             df = pd.read_csv(stats_file)
-             # Assuming sorted by energy or index, picking best
-             best_idx = df.loc[df['energy'].idxmin()]['conf_id']
-             return out_dir / f"{ligand_name}_conf_{int(best_idx)}.pdb"
-        return out_dir / f"{ligand_name}_conf_0.pdb" # Fallback
+        df = pd.read_csv(stats_file)
+        # Assuming sorted by energy or index, picking best
+        best_idx = df.loc[df['energy'].idxmin()]['conf_id']
+        return out_dir / f"{ligand_name}_conf_{int(best_idx)}.pdb"
 
     # Prepare output folder
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 from tqdm import tqdm  
-
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 # Load model
 model = esm.pretrained.esmfold_v1()
 model = model.eval().cuda()
