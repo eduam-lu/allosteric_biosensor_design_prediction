@@ -150,7 +150,24 @@ RF_DESIGNS, = glob_wildcards(os.path.join(RF_PDB_DIR, "{rf_id}.pdb"))
 rule all:
     input:
         f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv",
-        f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png" # <--- Add this
+        f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png",
+        # --- 1. Comparative Distribution Plots ---
+        f"{OUTPUT_DIR}/visualisations/dist_pLDDT.png",
+        f"{OUTPUT_DIR}/visualisations/dist_TMscore.png",
+        f"{OUTPUT_DIR}/visualisations/dist_Gnina_affinity.png",
+        f"{OUTPUT_DIR}/visualisations/dist_Gnina_CNNscore.png",
+
+        # --- 2. Boltz Native Distribution Plots ---
+        f"{OUTPUT_DIR}/visualisations/dist_Boltz_confidence.png",
+        f"{OUTPUT_DIR}/visualisations/dist_Boltz_pred_affinity.png",
+        f"{OUTPUT_DIR}/visualisations/dist_Boltz_binary_affinity.png",
+
+        # --- 3. Previous Visualisations (Scatter Plots) ---
+        f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png",
+        f"{OUTPUT_DIR}/visualisations/gnina_metrics.png",
+
+        # --- 4. Final Text Report ---
+        f"{OUTPUT_DIR}/reports/validity_summary.txt"
 # -----------------------------------------------------------------------------
 # 2. PHASE 1: SCATTER LigandMPNN (Parallel on GPUs)
 # -----------------------------------------------------------------------------
@@ -713,9 +730,9 @@ rule gather_final_candidates:
 
 rule plot_plddt_vs_tmscore:
     input:
-        esm_csv = rule.first_3d_filter.output.esm_csv
-        second_csv = rules.gather_final_candidates.output.second_regular_csv
-        second_cofold_csv = rules.gather_final_candidates.output.second_cofold_csv
+        esm_csv = rules.first_3d_filter.output.esm_csv,
+        second_csv = rules.gather_final_candidates.output.second_regular_csv,
+        second_cofold_csv = rules.gather_final_candidates.output.second_cofold_csv,
         boltz_csv = rules.gather_final_candidates.output.boltz_csv
     output:
         # Keep the outputs declared so Snakemake tracks them
@@ -747,7 +764,7 @@ rule plot_plddt_vs_tmscore:
             f.write(caption_text)
             
         # Generate the Plot
-        df = pd.read_csv(input.metrics_csv)
+        df = pd.read_csv(input.esm_csv)
         
         func.plot_scatter_with_region(
             df=df,
@@ -951,9 +968,9 @@ rule plot_metric_distributions:
 rule report_validity_and_candidates:
     input:
         # Plug in your actual rules here that output the checked dataframes
-        cofold_valid_csv = rules.check_validity.output.cofold_csv, 
-        boltz_valid_csv = rules.check_validity.output.boltz_csv,   
-        final_filtered_csv = rules.final_filter.output.final_csv   
+        second_cofold_csv = rules.gather_final_candidates.output.second_cofold_csv,
+        boltz_csv = rules.gather_final_candidates.output.boltz_csv,   
+        final_filtered_csv = rules.gather_final_candidates.output.final_summary   
     output:
         caption_file = f"{OUTPUT_DIR}/reports/validity_report.rst",
         summary_txt = report(
@@ -977,8 +994,8 @@ rule report_validity_and_candidates:
                     "of the final selected candidates.")
 
         # 2. Read the data
-        df_cofold = pd.read_csv(input.cofold_valid_csv)
-        df_boltz = pd.read_csv(input.boltz_valid_csv)
+        df_cofold = pd.read_csv(input.second_cofold_csv)
+        df_boltz = pd.read_csv(input.boltz_csv)
         df_final = pd.read_csv(input.final_filtered_csv)
 
         # 3. Process cofold validities (filtering for True)

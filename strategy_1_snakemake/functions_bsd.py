@@ -1726,6 +1726,75 @@ def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim
         
     plt.close(fig)
 
+def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, xlim=None, ylim=None, output_file=None):
+    """
+    Plots a 2x2 grid of scatter plots, overlays a rectangle on each, 
+    and displays the count of designs within the target region.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    
+    # Create a 2x2 grid of subplots
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    axes = axes.flatten() # Flattens the 2x2 array into a 1D list of 4 axes for easy looping
+    
+    for idx, (df, title) in enumerate(zip(dfs, titles)):
+        ax = axes[idx]
+        
+        # 1. Create the scatter plot
+        # Use .get() or check if column exists to avoid errors if a model failed and returned an empty df
+        if not df.empty and x_col in df.columns and y_col in df.columns:
+            ax.scatter(df[x_col], df[y_col], alpha=0.6, label='Data Points')
+            
+            # 4. Count designs in region
+            # We calculate this manually here to avoid needing to import count_designs_in_region
+            in_region = df[
+                (df[x_col] >= x_range[0]) & (df[x_col] <= x_range[1]) & 
+                (df[y_col] >= y_range[0]) & (df[y_col] <= y_range[1])
+            ]
+            design_count = len(in_region)
+        else:
+            design_count = 0
+            ax.text(0.5, 0.5, "No Data", ha='center', va='center', transform=ax.transAxes)
+
+        # 2. Calculate rectangle parameters
+        width = x_range[1] - x_range[0]
+        height = y_range[1] - y_range[0]
+        
+        # 3. Create the rectangle patch
+        rect = patches.Rectangle(
+            (x_range[0], y_range[0]), 
+            width, height, linewidth=2, 
+            edgecolor='red', facecolor='red', alpha=0.2, label='Target Region'
+        )
+        ax.add_patch(rect)
+        
+        # Add text box
+        text_str = f'Designs in region: {design_count}'
+        props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
+        ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=11,
+                verticalalignment='top', bbox=props)
+        
+        # 5. Apply Axis Limits
+        if xlim is not None: ax.set_xlim(xlim)
+        if ylim is not None: ax.set_ylim(ylim)
+        
+        # Formatting
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_title(title)
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+    plt.tight_layout() # Prevents overlapping of titles and labels
+    
+    # Save or Show
+    if output_file:
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    else:
+        plt.show()
+        
+    plt.close(fig)
+
 def plot_multiple_scatters(df_list, titles, x_col, y_col, x_range, y_range, cols=3, xlim=None, ylim=None):
     """
     Creates a grid of subplots, highlighting a target region and counting valid designs.
@@ -1805,12 +1874,15 @@ def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2, out
 
     # 2. Setup Grid
     n_plots = len(columns)
-    rows = math.ceil(n_plots / cols)
     
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 6, rows * 4), constrained_layout=True)
+    # --- FIX 1: Don't force 2 columns if we only have 1 plot! ---
+    actual_cols = min(cols, n_plots) 
+    rows = math.ceil(n_plots / actual_cols)
     
-    # Flatten axes for easy iteration, handle single plot case
-    if n_plots > 1:
+    fig, axes = plt.subplots(rows, actual_cols, figsize=(actual_cols * 6, rows * 4), constrained_layout=True)
+    
+    # --- FIX 2: Safely flatten regardless of grid size ---
+    if hasattr(axes, 'flatten'):
         axes_flat = axes.flatten()
     else:
         axes_flat = [axes]
