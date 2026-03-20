@@ -505,57 +505,62 @@ def run_rf3():
 
 ### LIGAND MPNN #######################################################################################################################################
 
-def generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A'):
-    """
-    Identifies all positions in an RFdiffusion PDB that are NOT part of the 
-    fixed segments (motifs). These positions are targets for LigandMPNN.
-    """
-    pdb_seq = extract_sequence(str(pdb_file))["coordinate_sequence"]
+def generate_redesign_string(deNovo_path, reference_path ,region=[0,54] ,chain_id='A'):
+
+    WT_structure = load_structure(reference_path)
+    dNT_structure = load_structure(deNovo_path)
     
-    # 1. Extract the sequences of the fixed motifs from the original
-    fixed_motif_seqs = []
-    start = start_position
-    for seg_start, seg_length in segments:
-        # Convert 1-based start to 0-based index
-        fixed_motif_seqs.append(original_seq[start-1:seg_start-1])
-        start = seg_start + seg_length
-    fixed_motif_seqs.append(original_seq[start-1:])
-
-
-    # 2. Create a mask for the PDB sequence (False = Redesign, True = Fixed)
-    # We initialize everything as False (to be redesigned)
-    fixed_mask = [False] * len(pdb_seq)
+    # Aligning Wild Type and de Novo Type by their DNA-binding domain.
+    WT_atoms = []
+    dNT_atoms = []
+    res_index = 1
+    for r1, r2 in zip(WT_structure[0]['A'].get_residues(), dNT_structure[0]['A'].get_residues()):
+        if r1.get_id()[1] >= region[0] and r1.get_id()[1] < region[1]:
+            if is_aa(r1, standard=True) and is_aa(r2, standard=True):
+                WT_atoms.append(r1['N'])
+                WT_atoms.append(r1['CA'])
+                WT_atoms.append(r1['C'])
+                WT_atoms.append(r1['O'])
+                dNT_atoms.append(r2['N'])
+                dNT_atoms.append(r2['CA'])
+                dNT_atoms.append(r2['C'])
+                dNT_atoms.append(r2['O'])
+                res_index += 1
+        if res_index >= region[1]:
+            break
+    superimpose = Superimposer()
+    superimpose.set_atoms(WT_atoms, dNT_atoms)
+    print(f"RMSD: {superimpose.rms}")
+    superimpose.apply(dNT_structure.get_atoms())
     
-    current_search_index = 0
+    # Initiate NeighborSearch object
+    WT_atom_space = [atom for atom in WT_structure[0]['A'].get_atoms()]
+    NSearch = NeighborSearch(WT_atom_space)
     
-    # 3. Find each fixed motif in the PDB sequence sequentially
-    print(fixed_motif_seqs)
-    for motif in fixed_motif_seqs:
-        print(motif)
-        # Find the motif starting from the end of the previous found motif
-        found_index = pdb_seq.find(motif, current_search_index)
-        
-        if found_index == -1:
-            # Critical Error: RFdiffusion failed to preserve a fixed segment
-            raise ValueError(f"Fixed segment '{motif}' lost in PDB sequence!")
-        
-        # Mark these residues as Fixed (True)
-        for i in range(found_index, found_index + len(motif)):
-            fixed_mask[i] = True
-            
-        # Update search start to ensure we look *after* this motif for the next one
-        current_search_index = found_index + len(motif)
+    # Retrieve all de Novo Type residues that do not match the Wild Type
+    modified_res = ""
+    radius = 1.0
+    for res in dNT_structure[0]['A'].get_residues():
+        if is_aa(res, standard=True):
+            proximity_residues = NSearch.search(res['CA'].get_coord(), radius, level='R')
+            found_match = False
+            try:
+                res_bb = np.array([res['N'].get_coord(), res['CA'].get_coord(), res['C'].get_coord(), res['O'].get_coord()])
+                for prox_res in proximity_residues:
+                    prox_res_bb = np.array([prox_res['N'].get_coord(), prox_res['CA'].get_coord(), prox_res['C'].get_coord(), prox_res['O'].get_coord()])
+                    sup_for_rms = SVDSuperimposer()
+                    sup_for_rms.set(res_bb, prox_res_bb)
+                    RMS = sup_for_rms.get_init_rms()
+                    #print(f"Res: {res.get_id()[1]}, RMS = {RMS}")
+                    if RMS < 0.3 and res.get_resname() == prox_res.get_resname():
+                        found_match = True
+            except KeyError as key:
+                print(f"Residue {res.get_id()[1]} is missing atom; {key}")
+            if not found_match:
+                modified_res += f" {chain_id}{res.get_id()[1]}"
+    
+    return modified_res.strip()
 
-    # 4. Generate the redesign string for everything NOT masked as fixed
-    redesign_list = []
-    for i, is_fixed in enumerate(fixed_mask):
-        if not is_fixed:
-            # Calculate PDB residue number
-            res_num = start_position + i
-            redesign_list.append(f"{chain_id}{res_num}")
-            redesign_string = " ".join(redesign_list)
-
-    return redesign_string
 
 def generate_MPNN_jsons(pdb_folder, output_json,
                                     user_redesign_list, first_shell, chain_id, original_seq,segments, start_position,
@@ -1318,6 +1323,121 @@ def compute_SAPscore():
 
 ### BINDING AND POCKET METRICS ###############################################################################################################################
 
+def gnina_box_generator(pdb_file, residues, size=20):
+    """
+    Generates a box dictionary for gnina based on the provided residues.
+    
+    :param pdb_file: Path to the PDB file.
+    :param residues: List of tuples [(chain, res_idx), ...] defining the pocket residues.
+    :param size: Size of the box in Angstroms (default: 20).
+    :return: Dictionary with box parameters for gnina.
+    """
+    # Load structure and filter for CA atoms
+    struct = load_structure(pdb_file)
+    ca = struct[struct.atom_name == "CA"]
+    
+    # Extract coordinates of specified residues
+    coords = []
+    for chain, res_idx in residues:
+        mask = (ca.chain_id == chain) & (ca.res_id == res_idx)
+        if np.any(mask):
+            coords.append(ca.coord[mask][0])  # Assuming one CA per residue
+    
+    if not coords:
+        raise ValueError("No valid residues found for box generation.")
+    
+    coords = np.array(coords)
+    
+    # Calculate center of the box
+    center = np.mean(coords, axis=0)
+    
+    # Define box parameters
+    box_dict = {
+        "center_x": center[0],
+        "center_y": center[1],
+        "center_z": center[2],
+        "size_x": size,
+        "size_y": size,
+        "size_z": size
+    }
+    
+    return box_dict
+
+def gnina_minimize_defined_box(pdb_file,
+                           ligand,
+                           output_folder,
+                           gnina_path,
+                           cnn,
+                           exhaustiveness, 
+                           residues, size):
+    """
+    This function both creates poses for the ligand for ESM predictions as well as computes the gnina scores
+    for each structure in the pdb_folder. Returns a dataframe with GNina metrics
+    
+    :param pdb_folder: Description
+    :param ligand: Description
+    :param output_folder: Description
+    :param gnina_path: Description
+    :param cnn: Description
+    :param exhaustiveness: Description
+    :param autobox_add: Description
+    """
+    # Create output directory if it doesn't exist
+    Path(output_folder).mkdir(parents=True, exist_ok=True)
+
+    # Create box dictionary
+    box_dict = gnina_box_generator(pdb_file, residues, size)
+
+    # Prepare gnina command
+    # Note: Added check to ensure pdb_file is a Path object or string
+    pdb_path = Path(pdb_file)
+    output_path = Path(output_folder) / f"{pdb_path.stem}_ligand.pdb"
+    
+    gnina_command = (
+        f'{gnina_path} -r {pdb_file} -l {ligand}  --center_x {box_dict["center_x"]} --center_y {box_dict["center_y"]} --center_z {box_dict["center_z"]} '
+        f'--size_x {box_dict["size_x"]} --size_y {box_dict["size_y"]} --size_z {box_dict["size_z"]} '
+        f'-o {output_path} --minimize '
+        f'--exhaustiveness {exhaustiveness} --cnn {cnn} --autobox_add {autobox_add}'
+    )
+    
+    # Run the command
+    gnina_result = subprocess.run(gnina_command, shell=True, capture_output=True, text=True)
+    
+    # Optional: Debug prints (can comment out for production)
+    # print(gnina_command)
+    # print(gnina_result.stdout)
+    
+    output = gnina_result.stdout
+
+    # --- Parsing Logic ---
+
+    # 1. Capture CNN Score
+    # Matches: "CNNscore: 0.41463"
+    match_cnn_score = re.search(r"CNNscore:\s*([-\d.]+)", output)
+    CNN_score = float(match_cnn_score.group(1)) if match_cnn_score else None
+
+    # 2. Capture CNN Affinity
+    # Matches: "CNNaffinity: 4.86840"
+    match_cnn_aff = re.search(r"CNNaffinity:\s*([-\d.]+)", output)
+    CNN_affinity = float(match_cnn_aff.group(1)) if match_cnn_aff else None
+
+    # 3. Capture both Affinity Scores
+    # Matches: "Affinity: -6.19290  -0.54008"
+    # This regex looks for: "Affinity:", spaces, Group 1 (number), spaces, Group 2 (number)
+    match_aff = re.search(r"Affinity:\s*([-\d.]+)\s+([-\d.]+)", output)
+    
+    if match_aff:
+        vina_affinity = float(match_aff.group(1))
+        vina_affinity_2 = float(match_aff.group(2))
+    else:
+        vina_affinity = None
+        vina_affinity_2 = None
+
+    return CNN_score, CNN_affinity, vina_affinity, vina_affinity_2
+
+    return
+
+
 def gnina_minimize_autobox(pdb_file,
                            ligand,
                            output_folder,
@@ -1497,9 +1617,9 @@ def filter_dataframe_1D(df, window_size, threshold, seq_col='seq', aa= 'A'):
     
     return df_filtered
 
-def threed_params_1_df(folder, output_folder,output_name, original_path, clash_distance=2.0, bond_distance=1.2,
+def threed_params_1_df(folder, output_folder,output_name, original_path, gnina_pocket_residues, clash_distance=2.0, bond_distance=1.2,
                        ligand_path=None, gnina_path="gnina", cnn="default",
-                       exhaustiveness=8, autobox_add=4):
+                       exhaustiveness=8, gnina_box_size=4):
     """
     Given a folder with structures, returns the following df: "file_ID", "sequence", "pLDDT mean", "pLDDT std dev", "RMSD", "TMscore", "clashes","Gnina_CNNscore","Gnina_affinity"
     """
@@ -1526,13 +1646,14 @@ def threed_params_1_df(folder, output_folder,output_name, original_path, clash_d
             # Sequence
             seq = extract_sequence(file_path, chain_id='A')["coordinate_sequence"]
             # GNINA scores
-            Gnina_CNNscore, Gnina_affinity,vina_affinity,vina_affinity_2 = gnina_minimize_autobox(pdb_file=file,
+            Gnina_CNNscore, Gnina_affinity,vina_affinity,vina_affinity_2 = gnina_minimize_defined_box(pdb_file=file,
                                                                     ligand=ligand_path,
                                                                     output_folder=f"{output_folder}/ESM_Gnina_minimized/",
                                                                     gnina_path=gnina_path,
                                                                     cnn=cnn,
                                                                     exhaustiveness=exhaustiveness,
-                                                                    autobox_add=autobox_add)
+                                                                    residues=gnina_pocket_residues,
+                                                                    size=gnina_box_size)
             # Generate row
             row = pd.Series([file.name, seq, pLDDT_mean, pLDDT_stdev, RMSD, TMscore, num_clashes,clash_atom,Gnina_CNNscore,Gnina_affinity], index=list(threed_df.columns))
             threed_df.loc[len(threed_df)] = row
@@ -1731,8 +1852,6 @@ def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, 
     Plots a 2x2 grid of scatter plots, overlays a rectangle on each, 
     and displays the count of designs within the target region.
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
     
     # Create a 2x2 grid of subplots
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -1742,17 +1861,12 @@ def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, 
         ax = axes[idx]
         
         # 1. Create the scatter plot
-        # Use .get() or check if column exists to avoid errors if a model failed and returned an empty df
+        # Use .empty and check if columns exist to avoid errors if a model failed and returned an empty df
         if not df.empty and x_col in df.columns and y_col in df.columns:
             ax.scatter(df[x_col], df[y_col], alpha=0.6, label='Data Points')
             
-            # 4. Count designs in region
-            # We calculate this manually here to avoid needing to import count_designs_in_region
-            in_region = df[
-                (df[x_col] >= x_range[0]) & (df[x_col] <= x_range[1]) & 
-                (df[y_col] >= y_range[0]) & (df[y_col] <= y_range[1])
-            ]
-            design_count = len(in_region)
+            # 4. Count designs in region using the external function
+            design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
         else:
             design_count = 0
             ax.text(0.5, 0.5, "No Data", ha='center', va='center', transform=ax.transAxes)
@@ -1769,7 +1883,7 @@ def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, 
         )
         ax.add_patch(rect)
         
-        # Add text box
+        # Add text box with the count
         text_str = f'Designs in region: {design_count}'
         props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
         ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=11,
@@ -1968,7 +2082,8 @@ def process_chai_folder(base_path, output_base_path):
         for subdir in source_dir.iterdir():
             if subdir.is_dir():
                 # Define the specific file we want (Model 0)
-                model_0_file = subdir / "pred.model_idx_0.cif"
+                model_0_file = subdir / subdir.name.lower() / "pred.model_idx_0.cif"
+                print (model_0_file)
 
                 if model_0_file.exists():
                     try:
@@ -1982,6 +2097,7 @@ def process_chai_folder(base_path, output_base_path):
                             new_name = folder_name + ".cif"
 
                         dest_file = dest_dir / new_name
+                        print(f"  Moving {model_0_file} to {dest_file}...")
 
                         # Copy and rename
                         shutil.copy2(model_0_file, dest_file)

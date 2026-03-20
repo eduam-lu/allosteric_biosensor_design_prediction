@@ -12,9 +12,17 @@ from ligand_sampling import sample_conformers
 # -----------------------------------------------------------------------------
 # PARAMETERS
 # -----------------------------------------------------------------------------
+### Execution params
 GPUS = config.get("gpus", 4)
 SPLIT_IDS = [str(i) for i in range(GPUS)]
+OUTPUT_DIR = config.get("output_dir", "results")
+### Input structure and ligand params
+RF_PDB_DIR = config.get("rf_pdb_dir", "allostery/full_run/RF_final_pdbs")
+RF_DESIGNS, = glob_wildcards(os.path.join(RF_PDB_DIR, "{rf_id}.pdb"))
+structure_path = config.get("structure_path", "input.pdb")
+ligand_smiles = config.get("ligand_smiles", "")
 conformers = config.get("num_conformers", 5)
+
 ### Ligand MPNN execution params
 # - path_to_ligand_MPNN_script: Path to the Ligand MPNN script
 # - path_to_ligand_MPNN_env: Path to the environment needed to use Ligand MPNN
@@ -70,11 +78,13 @@ filter_1d_treshold = config.get('filter_1d_treshold', 10)
 # - top_n_gnina_ESM: Number of top designs to keep based on GNINA docking scores
 clash_distance = config.get('clash_distance', 2.0)
 bond_distance = config.get('bond_distance', 1.2)
+
 MIN_PLDDT_1 = config.get('MIN_PLDDT_1', 0.8)
 MIN_RMSD_1 = config.get('MIN_RMSD_1', 0.5)
 MAX_RMSD_1 = config.get('MAX_RMSD_1', 10)
 MAX_CLASHES_1 = config.get('MAX_CLASHES_1', 1.01)
 global_score_weights = config.get('global_score_weights', {"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2})
+
 top_n_score_ESM = config.get('top_n_score_ESM', 10)
 top_n_gnina_ESM = config.get('top_n_gnina_ESM', 9)
 
@@ -87,12 +97,14 @@ gnina_path = config.get('gnina_path', "gnina")
 gnina_cnn = config.get('gnina_cnn', "crossdock_default2018")
 gnina_exhaustiveness = config.get('gnina_exhaustiveness', 8)
 gnina_autobox_add = config.get('gnina_autobox_add', 4)
+gnina_box_size = config.get('gnina_box_size', 20)
 
 ### Second prediction round
 # - model_flag: Prediction model to use ("CHAI", "AF3", or "BOLTZ_ONLY")
 # - msa_flag: If true, MSAs will be used during structure prediction
 model_flag = config.get('model_flag', "CHAI")
 msa_flag = config.get('msa_flag', False)
+templates_flag = config.get('templates_flag', False) #Under development, ignore for now
 
 ### Boltz params
 # - max_dist: Maximum distance threshold for Boltz prediction
@@ -107,6 +119,7 @@ msa_flag = config.get('msa_flag', False)
 # - output_format: Output format for the final structures ('pdb', 'cif', etc.)
 # - sampling_steps_affinity: Number of sampling steps used specifically for affinity calculation
 # - binding_pocket: List of residues defining the binding pocket
+
 max_dist = config.get('max_dist', 5.0)
 use_msa_boltz = config.get('use_msa_boltz', True)
 use_forces = config.get('use_forces', True)
@@ -120,6 +133,7 @@ output_format = config.get('output_format', 'pdb')
 sampling_steps_affinity = config.get('sampling_steps_affinity', 100)
 binding_pocket = config.get('binding_pocket', None)
 site_residues_check_cofold = [60, 64, 67, 82, 86, 100, 103, 104, 105, 109, 112, 113, 116, 117, 131, 134, 137, 138]
+
 ### Final filtering
 # - top_n_score_final: Number of designs to be selected after the final round of filtering based on structural scores
 # - top_n_gnina_final: Number of designs to be selected after the final round of filtering based on GNINA scores
@@ -127,24 +141,8 @@ top_n_score_final = config.get('top_n_score_final', 5)
 top_n_gnina_final = config.get('top_n_gnina_final', 2)
 
 # -----------------------------------------------------------------------------
-# 1. SETUP: Scan the input RFdiffusion folder
+# 1. RULE ALL
 # -----------------------------------------------------------------------------
-# The inputs from the RFdiffusion module are a final pdb folder, containing one pdb per design. We use glob_wildcards to dynamically find all PDBs in your starting folder.
-# Also, the module outputs the necessary MPNN json files, minimally pdb_paths_multijson and redesigned_residues_multijson
-# Run this using: snakemake -s bsd_def.smk --configfile basic_config_bsd.yml --cores 8 --resources gpu=1
-
-RF_PDB_DIR = config.get("rf_pdb_dir", "allostery/full_run/RF_final_pdbs")
-OUTPUT_DIR = config.get("output_dir", "results")
-rf_paths_json = config.get("rf_paths_json", f"{OUTPUT_DIR}/RF_outputs/pdb_paths_multi.json")
-rf_res_json = config.get("rf_res_json", f"{OUTPUT_DIR}/RF_outputs/redesigned_residues_multi.json")
-structure_path = config.get("structure_path", "input.pdb")
-ligand_smiles = config.get("ligand_smiles", "")
-
-ESM_GPUS = config.get("esm_gpus", 4)
-ESM_SPLIT_IDS = [str(i) for i in range(ESM_GPUS)]
-
-# Dynamically find all PDBs in your starting folder
-RF_DESIGNS, = glob_wildcards(os.path.join(RF_PDB_DIR, "{rf_id}.pdb"))
 
 # Target rule to drive the DAG
 rule all:
@@ -167,7 +165,8 @@ rule all:
         f"{OUTPUT_DIR}/visualisations/gnina_metrics.png",
 
         # --- 4. Final Text Report ---
-        f"{OUTPUT_DIR}/reports/validity_summary.txt"
+        f"{OUTPUT_DIR}/reports/validity_summary.html"
+
 # -----------------------------------------------------------------------------
 # 2. PHASE 1: SCATTER LigandMPNN (Parallel on GPUs)
 # -----------------------------------------------------------------------------
@@ -178,10 +177,36 @@ rule all:
 # --- A. Split the JSONs ---
 # This rule takes the JSONs from RFdiffusion and divides them equally 
 # into N separate chunks (where N = MPNN_GPUS).
+rule generate_mpnn_jsons:
+    input:
+        rf_pdbs = RF_PDB_DIR
+        reference_path = structure_path
+    output:
+        rf_paths_json = f"{OUTPUT_DIR}/MPNN_jsons/pdb_paths_multi.json",
+        res_json = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues_multi.json"
+    run:
+        # Iterate through all RF designs and create the combined JSONs needed for MPNN
+        pdb_files = list(Path(pdb_folder).glob("*.pdb"))
+
+        data_dict = {}
+        redesigned_residues_dict = {}
+
+        for pdb_file in pdb_files:
+
+            # multi pdb
+            data_dict[str(pdb_file)] = ""
+            redesigned_residues_dict[str(pdb_file)] = func.generate_redesign_string(deNovo_path=pdb_file, reference_path=structure_path, region=[0,54], chain_id='A')
+        
+        # Generate json files
+        json.dump(data_dict, open(output.rf_paths_json, "w"))
+        json.dump(redesigned_residues_dict, open(output.res_json, "w"))
+
+        #Update this in the future if you wanna add biases in aa files
+
 rule split_mpnn_jsons:
     input:
-        paths_json = rf_paths_json,
-        res_json = rf_res_json
+        paths_json = rules.generate_mpnn_jsons.output.rf_paths_json,
+        res_json = rules.generate_mpnn_jsons.output.res_json
     output:
         paths_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json", split_id=SPLIT_IDS),
         res_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json", split_id=SPLIT_IDS)
@@ -624,8 +649,8 @@ rule run_second_prediction:
                 func.run_chai_w_MSA(row, f"{OUTPUT_DIR}/{model}_prediction/{wildcards.survivor_id}")
                 func.run_chai_cofold_w_MSA(row, f"{OUTPUT_DIR}/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"])
             else:
-                func.run_chai(row, f"{OUTPUT_DIR}/{model}_prediction/{wildcards.survivor_id}")
-                func.run_chai_cofold(row, f"{OUTPUT_DIR}/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"])
+                func.run_chai(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_prediction/{wildcards.survivor_id}")
+                func.run_chai_cofold(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"])
         elif model == "AF3":
             func.run_AlphaFold3(row, f"{OUTPUT_DIR}", msa_flag=msa, ligand_SMILES=config["ligand_smiles"])
             
@@ -646,7 +671,7 @@ rule process_second_prediction_folder:
         cofold_pdbs = directory(f"{OUTPUT_DIR}/{config['model_flag']}_pdbs/{config['model_flag']}_cofold_pdbs")
     params:
         # The base path where the raw folders (CHAI_prediction / CHAI_cofold) are located
-        raw_base = f"{OUTPUT_DIR}",
+        raw_base = f"{OUTPUT_DIR}/{config['model_flag']}_predictions/",
         # The base path where the cleaned PDBs/CIFs will go
         out_base = f"{OUTPUT_DIR}/{config['model_flag']}_pdbs",
         model = config["model_flag"]
@@ -669,38 +694,60 @@ rule gather_final_candidates:
     input:
         boltz_pdbs = rules.process_boltz_folder.output.pdbs_dir,
         reg_pdbs = rules.process_second_prediction_folder.output.pred_pdbs,
-        cofold_pdbs = rules.process_second_prediction_folder.output.cofold_pdbs
+        cofold_pdbs = rules.process_second_prediction_folder.output.cofold_pdbs,
+        best_ligand_pdb = rules.sample_best_conformer.output.best_pdb
     output:
         second_regular_csv = f"{OUTPUT_DIR}/{model_flag}_predictions.csv",
         second_cofold_csv = f"{OUTPUT_DIR}/{model_flag}_cofold.csv",
         boltz_csv = f"{OUTPUT_DIR}/BOLTZ_predictions.csv",
         final_summary = f"{OUTPUT_DIR}/final_scores_topn_filtered.csv"
+    resources:
+        gpu = 1
     run:
         # 1. Boltz
         boltz_df = func.threed_params_1_df(
-            folder=f"{OUTPUT_DIR}/BOLTZ_pdbs", 
+            folder=input.boltz_pdbs, 
             output_folder=OUTPUT_DIR,
             output_name="BOLTZ_predictions.csv",
-            original_path=structure_path,
-            ligand_path=ligand_smiles
+            original_path=structure_path, 
+            clash_distance=clash_distance, 
+            bond_distance=bond_distance,
+            ligand_path=input.best_ligand_pdb, 
+            gnina_path=gnina_path,
+            cnn=gnina_cnn,
+            exhaustiveness=gnina_exhaustiveness,
+            autobox_add=gnina_autobox_add
         )
         boltz_df = func.check_cofold_validity(boltz_df, f"{OUTPUT_DIR}/BOLTZ_pdbs", "LIG", site_residues_check_cofold, extension=".pdb")
         boltz_df.to_csv(output.boltz_csv, index=False)
         # 2. Regular
         reg_df = func.threed_params_1_df(
-            folder=f"{OUTPUT_DIR}/{model_flag}_pdbs",
+            folder=input.reg_pdbs,
             output_folder=OUTPUT_DIR,
             output_name=f"{model_flag}_predictions.csv",
-            original_path=structure_path
+            original_path=structure_path, 
+            clash_distance=clash_distance, 
+            bond_distance=bond_distance,
+            ligand_path=input.best_ligand_pdb, 
+            gnina_path=gnina_path,
+            cnn=gnina_cnn,
+            exhaustiveness=gnina_exhaustiveness,
+            autobox_add=gnina_autobox_add
         )
         reg_df.to_csv(output.second_regular_csv, index=False)
         # 3. Cofold
         cofold_df = func.threed_params_1_df(
-            folder=f"{OUTPUT_DIR}/{model_flag}_pdbs", 
+            folder=input.cofold_pdbs, 
             output_folder=OUTPUT_DIR,
             output_name=f"{model_flag}_cofold_predictions.csv",
-            original_path=structure_path,
-            ligand_path=ligand_smiles
+            original_path=structure_path, 
+            clash_distance=clash_distance, 
+            bond_distance=bond_distance,
+            ligand_path=input.best_ligand_pdb, 
+            gnina_path=gnina_path,
+            cnn=gnina_cnn,
+            exhaustiveness=gnina_exhaustiveness,
+            autobox_add=gnina_autobox_add
         )
         cofold_df = func.check_cofold_validity(cofold_df, f"{OUTPUT_DIR}/{model_flag}_pdbs", "LIG2", site_residues_check_cofold, extension=".cif")
         cofold_df.to_csv(output.second_cofold_csv, index=False)
@@ -728,24 +775,27 @@ rule gather_final_candidates:
 # 8. PHASE 7: GENERATE VISUALISATIONS
 # -----------------------------------------------------------------------------
 
+
+
 rule plot_plddt_vs_tmscore:
     input:
+        # FIX: Added commas at the end of each line and fixed "rule" -> "rules"
         esm_csv = rules.first_3d_filter.output.esm_csv,
         second_csv = rules.gather_final_candidates.output.second_regular_csv,
         second_cofold_csv = rules.gather_final_candidates.output.second_cofold_csv,
         boltz_csv = rules.gather_final_candidates.output.boltz_csv
     output:
-        # Keep the outputs declared so Snakemake tracks them
+        # Update filenames to reflect GNINA metrics
         caption_file = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst",
         scatter_plot = report(
             f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png",
             caption=f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst",
             category="Visualisations",
-            subcategory="ESM 3D Metrics"
+            subcategory="3D Metrics Comparison",
+            labels={"Figure": "Multi-Model pLDDT vs TMscore"}
         )
     run:
         
-        # --- FIX: Define the paths as plain variables inside the run block ---
         caption_path = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.rst"
         plot_path = f"{OUTPUT_DIR}/visualisations/plddt_vs_tmscore.png"
         
@@ -754,25 +804,39 @@ rule plot_plddt_vs_tmscore:
         
         # Generate the .rst caption file
         caption_text = (
-            "Scatter plot showing the distribution of **pLDDT mean** vs **TMscore**.\n\n"
-            "The highlighted red rectangle shows the target region of designs that "
-            "passed the physical thresholds (high confidence folding and good structural alignment)."
+            "Scatter plots showing the distribution of **pLDDT mean** vs **TMscore** "
+            "for the ESM model, Second Model (Protein-only), Second Model (Cofold), and Boltz.\n\n"
+            "The highlighted red rectangles show the target region of designs with high "
+            "predicted binding probability (pLDDT mean) and strong structural alignment."
         )
         
         # Write to the path explicitly
         with open(caption_path, "w") as f:
             f.write(caption_text)
             
-        # Generate the Plot
-        df = pd.read_csv(input.esm_csv)
+        # 1. Load the four DataFrames
+        df_esm = pd.read_csv(input.esm_csv)
+        df_sec = pd.read_csv(input.second_csv)
+        df_cofold = pd.read_csv(input.second_cofold_csv)
+        df_boltz = pd.read_csv(input.boltz_csv)
         
-        func.plot_scatter_with_region(
-            df=df,
-            x_col="pLDDT_mean",
+        # 2. Package them into lists
+        dfs = [df_esm, df_sec, df_cofold, df_boltz]
+        titles = ["ESM Prediction", "Second Model (Protein Only)", "Second Model (Cofold)", "Boltz Prediction"]
+        
+        # 3. Call the 4-panel plotting function
+        func.plot_four_scatters_with_region(
+            dfs=dfs,
+            titles=titles,
+            x_col="pLDDT_mean", # Column names based on functions_bsd.py
             y_col="TMscore",
-            x_range=[MIN_PLDDT_1, 1.0], 
-            y_range=[MIN_RMSD_1, 1.0],  
-            output_file=plot_path  # Pass the explicit path here too
+            # NOTE: Adjust these ranges based on your desired pLDDT vs TMscore cutoffs! 
+            # pLDDT_mean is [0, 1]. TMscore is typically positive (0-1), so higher is better.
+            x_range=[80, 100],      # Example: pLDDT_mean >= 0.5
+            y_range=[0.8, 1.0],   # Example: TMscore between 0.5 and 1.0
+            xlim=[0, 100],
+            ylim=[0, 1],
+            output_file=plot_path 
         )
 
 rule plot_gnina:
@@ -967,25 +1031,25 @@ rule plot_metric_distributions:
 
 rule report_validity_and_candidates:
     input:
-        # Plug in your actual rules here that output the checked dataframes
         second_cofold_csv = rules.gather_final_candidates.output.second_cofold_csv,
         boltz_csv = rules.gather_final_candidates.output.boltz_csv,   
         final_filtered_csv = rules.gather_final_candidates.output.final_summary   
     output:
         caption_file = f"{OUTPUT_DIR}/reports/validity_report.rst",
-        summary_txt = report(
-            f"{OUTPUT_DIR}/reports/validity_summary.txt",
+        # CHANGE 1: Output is now an HTML file
+        summary_html = report(
+            f"{OUTPUT_DIR}/reports/validity_summary.html",
             caption=f"{OUTPUT_DIR}/reports/validity_report.rst",
             category="Overview",
             subcategory="Final Results",
-            labels={"Text": "Cofold Validity & Final Sequences"}
+            labels={"Content": "Cofold Validity & Final Sequences"}
         )
     run:
         import pandas as pd
         from pathlib import Path
 
         # Ensure output directory exists
-        Path(output.summary_txt).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.summary_html).parent.mkdir(parents=True, exist_ok=True)
 
         # 1. Write the caption file
         with open(output.caption_file, "w") as f:
@@ -1033,7 +1097,6 @@ rule report_validity_and_candidates:
         lines.append(f"Total Final Candidates: {len(df_final)}\n")
         
         if len(df_final) > 0:
-            # Check the sequence column name (functions_bsd usually uses 'sequence' or 'seq')
             seq_col = 'sequence' if 'sequence' in df_final.columns else 'seq'
             
             for _, row in df_final.iterrows():
@@ -1042,6 +1105,17 @@ rule report_validity_and_candidates:
         else:
             lines.append("No final candidates survived the filters.")
 
-        # 5. Write everything to the output text file
-        with open(output.summary_txt, "w") as f:
-            f.write("\n".join(lines))
+        # CHANGE 2: Wrap the joined lines in HTML <pre> tags
+        html_content = (
+            "<html>\n"
+            "<body style='font-family: monospace; background-color: #f4f4f4; padding: 20px;'>\n"
+            "<pre>\n"
+            + "\n".join(lines) + 
+            "\n</pre>\n"
+            "</body>\n"
+            "</html>"
+        )
+
+        # Write to the HTML output file
+        with open(output.summary_html, "w") as f:
+            f.write(html_content)
