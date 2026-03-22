@@ -8,12 +8,27 @@ import sys
 import json
 import yaml
 from Bio import PDB
-from Bio.PDB import PDBParser, MMCIFParser, DSSP, NeighborSearch, Selection
+from Bio.PDB import PDBParser, MMCIFParser, DSSP, NeighborSearch, Selection, Superimposer
+from Bio.PDB.Polypeptide import is_aa
+from Bio.SVDSuperimposer import SVDSuperimposer
 from Bio.SeqUtils import seq1
 import numpy as np
 import biotite.structure as struc
 import biotite.structure.io as bsio
-from biotite.structure.io import load_structure
+from biotite.structure.io import load_structure as biotite_load_structure
+
+# Biopython loader for generate_redesign_string function
+def load_structure(pdb_path):
+    """Load PDB or CIF structure files using appropriate parser."""
+    pdb_path_str = str(pdb_path).lower()
+    
+    if pdb_path_str.endswith('.cif'):
+        parser = MMCIFParser(QUIET=True)
+    else:
+        parser = PDBParser(QUIET=True)
+    
+    structure = parser.get_structure("structure", pdb_path)
+    return structure
 
 from tmtools import tm_align
 import shutil
@@ -581,20 +596,23 @@ def generate_MPNN_jsons(pdb_folder, output_json,
     
     # Parse the pdb folder and generate json with pdb paths
     pdb_files = list(Path(pdb_folder).glob("*.pdb"))
-
+    pdb_files.extend(list(Path(pdb_folder).glob("*.cif")))  # Also support CIF files
+    
     data_dict = {}
     redesigned_residues_dict = {}
 
     for pdb_file in pdb_files:
-
-        # multi pdb
+        # Use filename (without extension) as identifier for redesign dict
+        pdb_name = Path(pdb_file).stem
+        
+        # multi pdb - LigandMPNN format: full path as key, empty string as value
         data_dict[str(pdb_file)] = ""
 
         # multiredesigns
         if first_shell_only:
-            redesigned_residues_dict[str(pdb_file)] = first_shell_list
+            redesigned_residues_dict[pdb_name] = first_shell_list
         else:
-            redesigned_residues_dict[str(pdb_file)] = generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A')
+            redesigned_residues_dict[pdb_name] = generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A')
 
     # Generate json files
     json.dump(data_dict, open(f"{output_json}/pdb_paths_multi.json", "w"))
@@ -1235,7 +1253,7 @@ def get_coords(pdb_path):
     Helper to get (N, 3) coordinates of CA atoms and the sequence string.
     Ensures coordinates are float64 and sequence is a string.
     """
-    struct = load_structure(pdb_path)
+    struct = biotite_load_structure(pdb_path)
     
     # Filter for Alpha Carbons only
     ca = struct[struct.atom_name == "CA"]
@@ -1270,7 +1288,7 @@ def detect_clashes_2(file_path, clash_distance=2.0, bond_distance=1.2):
     """
     try:
         # 1. Load Structure
-        structure = load_structure(file_path)
+        structure = biotite_load_structure(file_path)
         
         # 2. Filter out Hydrogens (Vectorized)
         mask = (structure.element != "H")
@@ -1333,7 +1351,7 @@ def gnina_box_generator(pdb_file, residues, size=20):
     :return: Dictionary with box parameters for gnina.
     """
     # Load structure and filter for CA atoms
-    struct = load_structure(pdb_file)
+    struct = biotite_load_structure(pdb_file)
     ca = struct[struct.atom_name == "CA"]
     
     # Extract coordinates of specified residues
@@ -1397,7 +1415,7 @@ def gnina_minimize_defined_box(pdb_file,
         f'{gnina_path} -r {pdb_file} -l {ligand}  --center_x {box_dict["center_x"]} --center_y {box_dict["center_y"]} --center_z {box_dict["center_z"]} '
         f'--size_x {box_dict["size_x"]} --size_y {box_dict["size_y"]} --size_z {box_dict["size_z"]} '
         f'-o {output_path} --minimize '
-        f'--exhaustiveness {exhaustiveness} --cnn {cnn} --autobox_add {autobox_add}'
+        f'--exhaustiveness {exhaustiveness} --cnn {cnn}'
     )
     
     # Run the command
@@ -1711,19 +1729,14 @@ def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max
 
     return sorted_df
 
-def threed_filter_2_df(df_list, output_folder,output_names, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10, top_n_gnina=10):
-    
-    # 1. Skip if output already exists (checking the first file as a proxy)
-    output_path = f"{output_folder}/ESM_filtered_df_0.csv"
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        print(f"3D metrics already exists. Skipping generation.")
-        # Reloading logic would go here if needed, usually just returns existing files
-        return [pd.read_csv(f"{output_folder}/ESM_filtered_df_{i}.csv") for i in range(len(df_list))]
-
+def threed_filter_2_df(df_list, output_folder, output_names, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10, top_n_gnina=10):
     filtered_dfs = []
     
     # 2. First Pass: Apply filters and calculate individual global scores
     for df in df_list:
+        # Clean file ID
+        df["file_ID"] = df["file_ID"].str.split('.').str[0]
+        
         # Filter by physical constraints
         df = df[
             (df["pLDDT_mean"] >= min_plddt) & 
@@ -1737,7 +1750,9 @@ def threed_filter_2_df(df_list, output_folder,output_names, weights, min_plddt=0
         filtered_dfs.append(df)
 
     # 3. Find intersection of IDs (only keep IDs that survived filters in ALL dataframes)
-    # We assume 'file_ID' is the common identifier. 
+    if not filtered_dfs:
+        return []
+        
     common_ids = set(filtered_dfs[0]["file_ID"])
     for df in filtered_dfs[1:]:
         common_ids.intersection_update(set(df["file_ID"]))
@@ -1769,18 +1784,19 @@ def threed_filter_2_df(df_list, output_folder,output_names, weights, min_plddt=0
     # Sort by Joint Gnina (ascending usually for affinity) -> Keep Top N
     temp_df = temp_df.sort_values(by="joint_gnina", ascending=True).head(top_n_gnina)
     temp_df.to_csv(f"{output_folder}/final_scores_topgnina_filtered.csv", index=False)
+    
     # 6. Final Filter: Return the original dataframes containing only the winning IDs
     winning_ids = temp_df["file_ID"].values
     
     final_output_dfs = []
-    for df,name in zip(filtered_dfs,output_names):
+    for df, name in zip(filtered_dfs, output_names):
         final_df = df[df["file_ID"].isin(winning_ids)].copy()
         
         # Optional: Save individual CSVs for each replicate
         final_df.to_csv(f"{output_folder}/{name}.csv", index=False)
         final_output_dfs.append(final_df)
 
-    return 
+    return final_output_dfs
 
 ### VISUALIZATION #######################################################################################################################################
 def count_designs_in_region(df, x_col, y_col, x_range, y_range):

@@ -2,6 +2,7 @@
 # IMPORTS
 # -----------------------------------------------------------------------------
 import os
+import json
 import pandas as pd
 from pathlib import Path
 import shutil
@@ -9,6 +10,7 @@ import shutil
 # Import your custom functions directly
 import functions_bsd as func
 from ligand_sampling import sample_conformers 
+from repair_pdb import batch_repair_and_update_jsons
 # -----------------------------------------------------------------------------
 # PARAMETERS
 # -----------------------------------------------------------------------------
@@ -132,7 +134,7 @@ diffusion_samples = config.get('diffusion_samples', 1)
 output_format = config.get('output_format', 'pdb')
 sampling_steps_affinity = config.get('sampling_steps_affinity', 100)
 binding_pocket = config.get('binding_pocket', None)
-site_residues_check_cofold = [60, 64, 67, 82, 86, 100, 103, 104, 105, 109, 112, 113, 116, 117, 131, 134, 137, 138]
+site_residues_check_cofold = [('A', res) for res in [60, 64, 67, 82, 86, 100, 103, 104, 105, 109, 112, 113, 116, 117, 131, 134, 137, 138]]
 
 ### Final filtering
 # - top_n_score_final: Number of designs to be selected after the final round of filtering based on structural scores
@@ -165,7 +167,7 @@ rule all:
         f"{OUTPUT_DIR}/visualisations/gnina_metrics.png",
 
         # --- 4. Final Text Report ---
-        f"{OUTPUT_DIR}/reports/validity_summary.html"
+        f"{OUTPUT_DIR}/reports/validity_summary.txt"
 
 # -----------------------------------------------------------------------------
 # 2. PHASE 1: SCATTER LigandMPNN (Parallel on GPUs)
@@ -179,14 +181,15 @@ rule all:
 # into N separate chunks (where N = MPNN_GPUS).
 rule generate_mpnn_jsons:
     input:
-        rf_pdbs = RF_PDB_DIR
+        rf_pdbs = RF_PDB_DIR,
         reference_path = structure_path
     output:
         rf_paths_json = f"{OUTPUT_DIR}/MPNN_jsons/pdb_paths_multi.json",
         res_json = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues_multi.json"
     run:
         # Iterate through all RF designs and create the combined JSONs needed for MPNN
-        pdb_files = list(Path(pdb_folder).glob("*.pdb"))
+        # Accept both PDB and CIF formats
+        pdb_files = list(Path(input.rf_pdbs).glob("*.pdb")) + list(Path(input.rf_pdbs).glob("*.cif"))
 
         data_dict = {}
         redesigned_residues_dict = {}
@@ -203,10 +206,28 @@ rule generate_mpnn_jsons:
 
         #Update this in the future if you wanna add biases in aa files
 
+rule repair_pdb_inputs:
+    input:
+        pdb_paths_json = f"{OUTPUT_DIR}/MPNN_jsons/pdb_paths_multi.json",
+        redesign_json = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues_multi.json"
+    output:
+        repaired_pdb_json = f"{OUTPUT_DIR}/MPNN_jsons/pdb_paths_multi_repaired.json",
+        repaired_redesign_json = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues_multi_repaired.json",
+        repair_report = f"{OUTPUT_DIR}/repair_summary.txt"
+    params:
+        repair_script = "repair_pdb.py"
+    run:
+        
+        batch_repair_and_update_jsons(
+            input.pdb_paths_json,
+            input.redesign_json,
+            Path(output.repaired_pdb_json).parent
+        )
+
 rule split_mpnn_jsons:
     input:
-        paths_json = rules.generate_mpnn_jsons.output.rf_paths_json,
-        res_json = rules.generate_mpnn_jsons.output.res_json
+        paths_json = f"{OUTPUT_DIR}/MPNN_jsons/pdb_paths_multi_repaired.json", 
+        res_json = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues_multi_repaired.json"  
     output:
         paths_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json", split_id=SPLIT_IDS),
         res_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json", split_id=SPLIT_IDS)
@@ -241,7 +262,8 @@ rule run_ligand_mpnn_hybrid:
         paths_json = f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json",
         res_json = f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json"
     output:
-        seqs_dir = directory(f"{OUTPUT_DIR}/mpnn_outputs/split_{{split_id}}/seqs")
+        seqs_dir = directory(f"{OUTPUT_DIR}/mpnn_outputs/split_{{split_id}}/seqs"),
+        done_flag = f"{OUTPUT_DIR}/mpnn_outputs/split_{{split_id}}/.mpnn_done"
     benchmark:
         f"{OUTPUT_DIR}/benchmarks/ligand_mpnn/split_{{split_id}}.tsv"
     params:
@@ -280,12 +302,18 @@ rule run_ligand_mpnn_hybrid:
         else:
             print(f"Chunk {wildcards.split_id} is empty. Skipping LigandMPNN execution.")
             shell(f"mkdir -p {output.seqs_dir}")
+        
+        # Create completion marker file
+        os.makedirs(os.path.dirname(output.done_flag), exist_ok=True)
+        with open(output.done_flag, "w") as f:
+            f.write("done")
 
 # --- C. Gather, Process, and Filter ---
 # This rule waits for ALL splits to finish, gathers all the seqs/ directories,
 # merges them into a single dataframe, and applies your 1D filters.
 rule process_mpnn_output_and_filter:
     input:
+        done_flags = expand(f"{OUTPUT_DIR}/mpnn_outputs/split_{{split_id}}/.mpnn_done", split_id=SPLIT_IDS),
         seqs_dirs = expand(f"{OUTPUT_DIR}/mpnn_outputs/split_{{split_id}}/seqs", split_id=SPLIT_IDS)
     output:
         mpnn_filtered_csv = f"{OUTPUT_DIR}/MPNN_filtered.csv"
@@ -462,7 +490,8 @@ rule process_esm_batch:
             gnina_path=gnina_path,
             cnn=gnina_cnn,
             exhaustiveness=gnina_exhaustiveness,
-            autobox_add=gnina_autobox_add
+            gnina_box_size=gnina_box_size,
+            gnina_pocket_residues=site_residues_check_cofold
         )
 
 checkpoint first_3d_filter:
@@ -716,7 +745,8 @@ rule gather_final_candidates:
             gnina_path=gnina_path,
             cnn=gnina_cnn,
             exhaustiveness=gnina_exhaustiveness,
-            autobox_add=gnina_autobox_add
+            gnina_box_size=gnina_box_size,
+            gnina_pocket_residues=site_residues_check_cofold
         )
         boltz_df = func.check_cofold_validity(boltz_df, f"{OUTPUT_DIR}/BOLTZ_pdbs", "LIG", site_residues_check_cofold, extension=".pdb")
         boltz_df.to_csv(output.boltz_csv, index=False)
@@ -732,7 +762,8 @@ rule gather_final_candidates:
             gnina_path=gnina_path,
             cnn=gnina_cnn,
             exhaustiveness=gnina_exhaustiveness,
-            autobox_add=gnina_autobox_add
+            gnina_box_size=gnina_box_size,
+            gnina_pocket_residues=site_residues_check_cofold
         )
         reg_df.to_csv(output.second_regular_csv, index=False)
         # 3. Cofold
@@ -747,7 +778,8 @@ rule gather_final_candidates:
             gnina_path=gnina_path,
             cnn=gnina_cnn,
             exhaustiveness=gnina_exhaustiveness,
-            autobox_add=gnina_autobox_add
+            gnina_box_size=gnina_box_size,
+            gnina_pocket_residues=site_residues_check_cofold
         )
         cofold_df = func.check_cofold_validity(cofold_df, f"{OUTPUT_DIR}/{model_flag}_pdbs", "LIG2", site_residues_check_cofold, extension=".cif")
         cofold_df.to_csv(output.second_cofold_csv, index=False)
@@ -1036,41 +1068,36 @@ rule report_validity_and_candidates:
         final_filtered_csv = rules.gather_final_candidates.output.final_summary   
     output:
         caption_file = f"{OUTPUT_DIR}/reports/validity_report.rst",
-        # CHANGE 1: Output is now an HTML file
-        summary_html = report(
-            f"{OUTPUT_DIR}/reports/validity_summary.html",
+        # Back to .txt for a clean download
+        summary_txt = report(
+            f"{OUTPUT_DIR}/reports/validity_summary.txt",
             caption=f"{OUTPUT_DIR}/reports/validity_report.rst",
             category="Overview",
             subcategory="Final Results",
-            labels={"Content": "Cofold Validity & Final Sequences"}
+            labels={"Text": "Cofold Validity & Final Sequences"}
         )
     run:
         import pandas as pd
         from pathlib import Path
 
         # Ensure output directory exists
-        Path(output.summary_html).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.summary_txt).parent.mkdir(parents=True, exist_ok=True)
 
-        # 1. Write the caption file
-        with open(output.caption_file, "w") as f:
-            f.write("Text summary detailing the number of valid cofold predictions "
-                    "(where the ligand is bound in the correct pocket) and the IDs/sequences "
-                    "of the final selected candidates.")
-
-        # 2. Read the data
+        # 1. Read the data
         df_cofold = pd.read_csv(input.second_cofold_csv)
         df_boltz = pd.read_csv(input.boltz_csv)
         df_final = pd.read_csv(input.final_filtered_csv)
 
-        # 3. Process cofold validities (filtering for True)
+        # 2. Process cofold validities (filtering for True)
         valid_cofold = df_cofold[df_cofold['is_valid'] == True]
         valid_boltz = df_boltz[df_boltz['is_valid'] == True]
 
-        # 4. Format the text report
+        # 3. Format the text report lines
         lines = []
         lines.append("=========================================")
         lines.append("   COFOLD VALIDITY & FINAL CANDIDATES    ")
-        lines.append("=========================================\n")
+        lines.append("=========================================")
+        lines.append("")
 
         # Second Model (Cofold)
         lines.append("--- SECOND MODEL (COFOLD) ---")
@@ -1079,7 +1106,7 @@ rule report_validity_and_candidates:
             lines.append("Valid IDs:")
             for vid in valid_cofold['file_ID']:
                 lines.append(f"  - {vid}")
-        lines.append("\n")
+        lines.append("")
 
         # Boltz Model
         lines.append("--- BOLTZ MODEL ---")
@@ -1088,34 +1115,38 @@ rule report_validity_and_candidates:
             lines.append("Valid IDs:")
             for vid in valid_boltz['file_ID']:
                 lines.append(f"  - {vid}")
-        lines.append("\n")
+        lines.append("")
 
         # Final Filtered Candidates
         lines.append("=========================================")
         lines.append("       FINAL FILTERED CANDIDATES         ")
-        lines.append("=========================================\n")
-        lines.append(f"Total Final Candidates: {len(df_final)}\n")
+        lines.append("=========================================")
+        lines.append(f"Total Final Candidates: {len(df_final)}")
+        lines.append("")
         
         if len(df_final) > 0:
             seq_col = 'sequence' if 'sequence' in df_final.columns else 'seq'
             
             for _, row in df_final.iterrows():
                 lines.append(f"> {row['file_ID']}")
-                lines.append(f"  {row[seq_col]}\n")
+                lines.append(f"  {row[seq_col]}")
+                lines.append("")
         else:
             lines.append("No final candidates survived the filters.")
 
-        # CHANGE 2: Wrap the joined lines in HTML <pre> tags
-        html_content = (
-            "<html>\n"
-            "<body style='font-family: monospace; background-color: #f4f4f4; padding: 20px;'>\n"
-            "<pre>\n"
-            + "\n".join(lines) + 
-            "\n</pre>\n"
-            "</body>\n"
-            "</html>"
-        )
+        # 4. THE MAGIC TRICK: Write the dynamic results directly into the .rst caption file!
+        with open(output.caption_file, "w") as f:
+            f.write("Text summary detailing the number of valid cofold predictions "
+                    "(where the ligand is bound in the correct pocket) and the IDs/sequences "
+                    "of the final selected candidates.\n\n")
+            
+            # In reStructuredText, '::' means "format the following indented block as raw code"
+            f.write("::\n\n")
+            
+            # Every line MUST be indented for the .rst code block to render correctly
+            for line in lines:
+                f.write(f"    {line}\n")
 
-        # Write to the HTML output file
-        with open(output.summary_html, "w") as f:
-            f.write(html_content)
+        # 5. Write the normal .txt file so the user can still download it cleanly
+        with open(output.summary_txt, "w") as f:
+            f.write("\n".join(lines))
