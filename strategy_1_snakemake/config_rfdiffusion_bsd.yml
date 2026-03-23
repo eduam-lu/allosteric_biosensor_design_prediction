@@ -1,0 +1,192 @@
+# ============================================================================
+# RF Diffusion Binding Site Designer - Snakemake Configuration File
+# ============================================================================
+# This configuration file contains all parameters for the RF diffusion
+# binding site redesign pipeline (up to Ligand MPNN)
+
+# ============================================================================
+# 1. BASIC PARAMETERS
+# ============================================================================
+# Path to the input structure file (PDB format)
+structure_path: "/proj/berzelius-2023-361/users/x_eduam/strategy_1_trial/structures/2XPU.pdb"
+
+# Chain ID to use from the input PDB file
+# If null, the first chain with protein residues will be selected
+# All other chains will be removed during PDB cleaning
+# Example: "A" or "B"
+chain_id: null
+
+# SMILES string of the ligand to be sampled
+ligand_smiles: "C1=CC=C(C=C1)C2=CC(=NN2C3=CC=C(C=C3)S(=O)(=O)N)C(F)(F)F"
+
+# Name of the ligand (used in PDB files)
+ligand_name: "Tc"
+
+# Residue name(s) of ligand(s) to keep during PDB cleaning
+# Can be a single residue name or comma/space-separated list for multiple ligands
+# Waters (HOH, WAT) are always removed
+# If null, all non-water heteroatoms will be kept
+# Examples:
+#   "UNL"           - keep only UNL residues
+#   "UNL,LIG"       - keep UNL and LIG residues
+#   "UNL LIG ABC"   - keep UNL, LIG, and ABC residues
+ligand_resname: TDC
+
+output_dir: "/proj/berzelius-2023-361/users/x_eduam/strategy_1_campaign/runs/RFD_snakemake_trial"
+
+# ============================================================================
+# 2. LIGAND SAMPLING PARAMETERS
+# ============================================================================
+# Number of conformers to generate for the ligand
+num_conformers: 2
+
+# Number of different positions to sample for the ligand around the protein
+num_positions: 1
+
+# RMSD cutoff for filtering conformers (Angstroms)
+# Anything below this value will be considered redundant
+conformer_rmsd_cutoff: 0.75
+
+# Rotation angle in degrees for exploring ligand placement
+rotation: 15
+
+# Translation distance in angstroms for exploring ligand placement
+translation: 0.3
+
+# ============================================================================
+# 3. ACTIVE SITE DEFINITION PARAMETERS
+# ============================================================================
+# Distance in angstroms to define the first shell of residues around the ligand
+first_shell_distance: 5.0
+
+# Distance in angstroms to define the second shell of residues around the first shell
+second_shell_distance: 5.0
+
+# If true, residues in the second shell will also be included in the redesign
+include_second_shell: false
+
+# If provided, this list of residues will be used as the active site
+# instead of calculating one (e.g., [10, 15, 20, 45])
+user_defined_active_site: null
+
+# If provided, the program ensures this list of residues are included
+# in the active site (e.g., [5, 8, 12])
+user_defined_residues: null
+
+# ============================================================================
+# 4. REDESIGN CONDITIONS PARAMETERS
+# ============================================================================
+# If true, only the LigandMPNN step will be performed, skipping RF diffusion
+ligand_MPNN_only: false
+
+# If provided, this folder with RF diffusion designs will be used as input
+# for LigandMPNN instead of running RF diffusion
+RF_folder: null
+
+# RF diffusion model to use: "all_atom", "RF1", or "RF3"
+RF_model: "RF3"
+
+# If true, residues within a secondary structure element will not be redesigned
+# (except first or final residue - NOT IMPLEMENTED YET)
+conservative_redesign: false
+
+# Number of residues to extend the redesign segment on each side
+segment_extension: 1
+
+# Number of residues to extend the redesign segment at the N-terminus
+n_termini_extension: 1
+
+# Number of residues to extend the redesign segment at the C-terminus
+# If null, it will extend to the end of the chain
+c_termini_extension: null
+
+# If provided, this contig map will be used for RF diffusion redesign
+# instead of calculating one (format: example 'A25-50,60-80')
+user_defined_contig_map: null
+
+# ============================================================================
+# 5. RF DIFFUSION EXECUTION PARAMETERS
+# ============================================================================
+# Path to the RF diffusion all atom apptainer image
+path_to_RFAA_apptainer: "/path/to/rf_se3_diffusion.sif"
+
+# Path to the RF diffusion all atom inference script
+path_to_RFAA_script: "/path/to/run_inference.py"
+
+# Path to the RF diffusion all atom weights file
+path_to_RFAA_weights: "/path/to/RFDiffusionAA_paper_weights.pt"
+
+# Path to the RF1 inference script
+path_to_RF1_script: "/path/to/RF1/scripts/run_inference.py"
+
+# Path to the environment needed to use RF1
+path_to_RF1_env: "/path/to/rf1_env"
+
+# Number of designs to generate with RF diffusion
+num_designs: 10
+
+# Number of diffusion steps to use in RF diffusion
+T: 50
+
+# Name of the ligand to be used in RFAA
+RFAA_ligand_name: "UNL"
+
+# Starting number for design numbering
+design_startnum: 1
+
+# If true, RF diffusion will run in deterministic mode for reproducibility
+deterministic: true
+
+# ============================================================================
+# 6. RF DIFFUSION 3 EXECUTION PARAMETERS
+# ============================================================================
+# Path to the environment needed to use RF Diffusion 3
+path_to_RF3_env: "/proj/berzelius-2023-361/users/x_eduam/.conda/envs/rfd3"
+
+# RF3 checkpoint path (default: 'rfd3' assumes it's available in the environment)
+RF3_checkpoint_path: "rfd3"
+
+# Batch size for RF3 designs (number of designs per batch)
+RF3_batch_size: 1
+
+# Number of batches to run (total designs = RF3_batch_size * RF3_num_batches)
+RF3_num_batches: 10
+
+# Number of diffusion timesteps for RF3
+RF3_num_timesteps: 200
+
+# Step scale for RF3 (higher = less diverse, more designable structures)
+# Range: 1.0 - 1.5 (typical: 1.5)
+RF3_step_scale: 1.5
+
+# Noise scale for RF3 diffusion process
+RF3_noise_scale: 1.003
+
+# Gamma 0 parameter for RF3 (ODE sampling: 0.0, stochastic: 0.6)
+RF3_gamma_0: 0.6
+
+# Gamma min parameter for RF3
+RF3_gamma_min: 1.0
+
+# Classifier-free guidance scale for RF3
+RF3_cfg_scale: 1.5
+
+# Enable classifier-free guidance in RF3
+RF3_use_classifier_free_guidance: false
+
+# Dump trajectories during RF3 design (for analysis/debugging)
+RF3_dump_trajectories: false
+
+# Prevalidate inputs for RF3 before running
+RF3_prevalidate_inputs: false
+
+# Use low memory mode for RF3 (memory-efficient tokenization)
+RF3_low_memory_mode: false
+
+
+# Subdirectories will be created automatically:
+# - output_dir/PDB_prep
+# - output_dir/PDB_info
+# - output_dir/ligand_sampling
+# - output_dir/RF_designs
+# - output_dir/MPNN_designs

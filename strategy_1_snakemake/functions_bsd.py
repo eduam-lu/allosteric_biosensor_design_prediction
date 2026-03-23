@@ -509,14 +509,177 @@ def run_rfAA(
     subprocess.run(rfAA_command, shell=True)
     return
 
-def run_rf3():
-
-    # Skip if output already exists and is not empty
-    if os.path.exists(f"{output_path}/RF3_designs") and os.listdir(f"{output_path}/RF3_designs"):
-        print(f"RF3 designs already exist in {output_path}/RF3_designs. Skipping RF3 execution.")
-        return
+def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, num_designs_batch, chain_id='A'):
+    """
+    Generate RF Diffusion 3 configuration YAML file.
     
-    return
+    Args:
+        output_yaml_path: Path where to save the YAML file
+        input_pdb: Path to input PDB structure
+        contig_map: Contig map string for RF3 format
+        ligand_resname: Name of the ligand residue
+        num_designs_batch: Number of designs to generate
+        chain_id: Chain ID of the protein (default 'A')
+    """
+    # RF3 YAML configuration template
+    rf3_config = {
+        'defaults': ['base', {'selftarget': 'rfd3.engine.RFD3InferenceEngine'}],
+        'out_dir': 'output_path',
+        'inputs': None,
+        'ckpt_path': RF3_checkpoint_path,
+        'json_keys_subset': None,
+        'skip_existing': True,
+        'specification': {
+            'spec-1': {
+                'input': input_pdb,
+                'contig': contig_map,
+                'select_fixed_atoms': {
+                    'ligand_name': ligand_resname
+                },
+                'ligand': ligand_resname
+            }
+        },
+        # Diffusion batch arguments
+        'diffusion_batch_size': RF3_batch_size,
+        'n_batches': num_designs_batch,
+        # Inference sampler arguments
+        'inference_sampler': {
+            'kind': 'default',
+            'cfg_features': ['active_donor', 'active_acceptor', 'ref_atomwise_rasa']
+        },
+        'use_classifier_free_guidance': RF3_use_classifier_free_guidance,
+        'cfg_scale': RF3_cfg_scale,
+        'center_option': 'all',
+        's_trans': 1.0,
+        'inference_noise_scaling_factor': 1.0,
+        'allow_realignment': False,
+        # Diffusion arguments
+        'num_timesteps': RF3_num_timesteps,
+        'step_scale': RF3_step_scale,
+        'noise_scale': RF3_noise_scale,
+        'p': 7,
+        'gamma_0': RF3_gamma_0,
+        'gamma_min': RF3_gamma_min,
+        's_jitter_origin': 0.0,
+        # Saving arguments
+        'cleanup_guideposts': True,
+        'cleanup_virtual_atoms': True,
+        'read_sequence_from_sequence_head': True,
+        'output_full_json': True,
+        'global_prefix': None,
+        'dump_prediction_metadata_json': True,
+        'dump_trajectories': RF3_dump_trajectories,
+        'align_trajectory_structures': False,
+        'prevalidate_inputs': RF3_prevalidate_inputs,
+        'low_memory_mode': RF3_low_memory_mode
+    }
+    
+    # Convert to YAML with proper formatting
+    yaml_str = "# @package global\n"
+    yaml_str += "defaults:\n"
+    yaml_str += "- base\n"
+    yaml_str += "- selftarget: rfd3.engine.RFD3InferenceEngine\n\n"
+    
+    yaml_str += f"out_dir: output_path\n"
+    yaml_str += f"inputs: null\n"
+    yaml_str += f"ckpt_path: {RF3_checkpoint_path}\n"
+    yaml_str += f"json_keys_subset: null\n"
+    yaml_str += f"skip_existing: true\n\n"
+    
+    yaml_str += "#########################################################\n"
+    yaml_str += "# Design spec args: overrides args from input json\n"
+    yaml_str += "specification:\n"
+    yaml_str += "  'spec-1':\n"
+    yaml_str += f"    input: {input_pdb}\n"
+    yaml_str += f"    contig: {contig_map}\n"
+    yaml_str += f"    select_fixed_atoms:\n"
+    yaml_str += f"      ligand_name: {ligand_resname}\n"
+    yaml_str += f"    ligand: {ligand_resname}\n"
+    yaml_str += "#########################################################\n\n"
+    
+    yaml_str += "# Diffusion batch args\n"
+    yaml_str += f"diffusion_batch_size: {RF3_batch_size}\n"
+    yaml_str += f"n_batches: {num_designs_batch}\n\n"
+    
+    yaml_str += "# Inference sampler args\n"
+    yaml_str += "inference_sampler:\n"
+    yaml_str += "  kind: 'default'\n"
+    yaml_str += "  cfg_features:\n"
+    yaml_str += "    - active_donor\n"
+    yaml_str += "    - active_acceptor\n"
+    yaml_str += "    - ref_atomwise_rasa\n\n"
+    
+    yaml_str += "# Classifier-free guidance args\n"
+    yaml_str += f"use_classifier_free_guidance: {str(RF3_use_classifier_free_guidance).lower()}\n"
+    yaml_str += f"cfg_scale: {RF3_cfg_scale}\n"
+    yaml_str += "center_option: 'all'\n"
+    yaml_str += "s_trans: 1.0\n"
+    yaml_str += "inference_noise_scaling_factor: 1.0\n"
+    yaml_str += "allow_realignment: false\n\n"
+    
+    yaml_str += "# Diffusion args\n"
+    yaml_str += f"num_timesteps: {RF3_num_timesteps}\n"
+    yaml_str += f"step_scale: {RF3_step_scale}\n"
+    yaml_str += f"noise_scale: {RF3_noise_scale}\n"
+    yaml_str += "p: 7\n"
+    yaml_str += f"gamma_0: {RF3_gamma_0}\n"
+    yaml_str += f"gamma_min: {RF3_gamma_min}\n"
+    yaml_str += "s_jitter_origin: 0.0\n\n"
+    
+    yaml_str += "# Saving args\n"
+    yaml_str += "cleanup_guideposts: true\n"
+    yaml_str += "cleanup_virtual_atoms: true\n"
+    yaml_str += "read_sequence_from_sequence_head: true\n"
+    yaml_str += "output_full_json: true\n"
+    yaml_str += "global_prefix: null\n"
+    yaml_str += "dump_prediction_metadata_json: true\n"
+    yaml_str += f"dump_trajectories: {str(RF3_dump_trajectories).lower()}\n"
+    yaml_str += "align_trajectory_structures: false\n"
+    yaml_str += f"prevalidate_inputs: {str(RF3_prevalidate_inputs).lower()}\n"
+    yaml_str += f"low_memory_mode: {str(RF3_low_memory_mode).lower()}\n"
+    
+    # Write to file
+    with open(output_yaml_path, 'w') as f:
+        f.write(yaml_str)
+    
+    print(f"RF3 configuration YAML generated: {output_yaml_path}")
+
+def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id, path_to_RF3_env=None):
+    """
+    Execute RF Diffusion 3 design pipeline.
+    
+    Args:
+        output_path: Path where to save RF3 outputs
+        input_pdb: Path to input PDB structure
+        contig_map: Contig map string for RF3 format
+        pdb_info: Dictionary with PDB information (must have 'active_site' key)
+        num_designs: Number of designs to generate
+        chain_id: Chain ID of the protein
+        path_to_RF3_env: Optional path to RF3 environment
+    """
+    # Create RF3 YAML configuration file
+    yaml_path = f"{output_path}/rf3_config.yaml"
+    generate_rf3_yaml(
+        output_yaml_path=yaml_path,
+        input_pdb=input_pdb,
+        contig_map=contig_map,
+        ligand_resname=pdb_info['active_site'][0] if pdb_info.get('active_site') else 'LIG',
+        num_designs_batch=num_designs,
+        chain_id=chain_id
+    )
+    
+    # Build RF3 command
+    cmd = f"rfd3 design out_dir={output_path} inputs={yaml_path}"
+    
+    # Execute RF3
+    if path_to_RF3_env:
+        # If environment path is provided, activate it
+        shell(f"source {path_to_RF3_env}/bin/activate && {cmd}")
+    else:
+        # Otherwise assume rfd3 is in PATH
+        shell(cmd)
+    
+    print(f"RF3 design completed. Output: {output_path}")
 
 ### LIGAND MPNN #######################################################################################################################################
 
