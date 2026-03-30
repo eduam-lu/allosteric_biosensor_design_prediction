@@ -18,6 +18,8 @@ import yaml
 import pandas as pd
 from pathlib import Path
 import shutil
+import zipfile
+import gzip
 from Bio.PDB import PDBParser, PDBIO
 from snakemake.shell import shell
 
@@ -41,6 +43,7 @@ structure_path = config.get('structure_path')
 chain_id = config.get('chain_id', None)  # If None, will use first chain with residues
 ligand_resname = config.get('ligand_resname', None)
 ligand_name = config.get('ligand_name', "Tc")
+ligand_smiles = config.get('ligand_smiles')
 output_dir = config.get('output_dir', "outputs/rf_diffusion_bsd")
 
 ### Ligand sampling parameters
@@ -128,7 +131,8 @@ rule all:
     This is the final output that drives the entire pipeline.
     """
     input:
-        rf_designs_done = f"{output_dir}/RF_designs/designs_completed.txt"
+        rf_designs_done = f"{output_dir}/RF_designs/designs_completed.txt",
+        rf_final_cif_done = f"{output_dir}/RF_final_cif/unzip_completed.txt"
     message:
         "RF Diffusion binding site design pipeline completed successfully!"
 
@@ -237,7 +241,7 @@ rule extract_pdb_info:
     Produces a JSON file with all metadata.
     """
     input:
-        pdb = get_prepared_pdb
+        pdb = get_prepared_pdb()
     output:
         pdb_info = f"{output_dir}/PDB_info/pdb_info.json"
     params:
@@ -274,7 +278,7 @@ rule ligand_sampling:
     Generates multiple conformers and positions within the binding pocket.
     """
     input:
-        pdb = get_prepared_pdb
+        pdb = get_prepared_pdb()
     output:
         lowest_energy = f"{output_dir}/ligand_sampling/lowest_energy_conformer.pdb",
         conformer_list = f"{output_dir}/ligand_sampling/conformer_list.json"
@@ -294,9 +298,9 @@ rule ligand_sampling:
         
         # Run ligand sampling
         result = run_ligand_sampling_pipeline(
-            pdb_path=input.pdb,
+            structure_path=input.pdb,
             ligand_smiles=params.ligand_smiles,
-            output_folder=params.output_dir,
+            output_path=params.output_dir,
             num_conformers=params.num_conformers,
             num_positions=params.num_positions,
             conformer_rmsd_cutoff=params.conformer_rmsd_cutoff,
@@ -307,10 +311,44 @@ rule ligand_sampling:
         
         # Collect all generated conformer PDB files (num_conformers × num_positions)
         import glob
-        conformer_pdbs = sorted(glob.glob(f"{params.output_dir}/*.pdb"))
+        import os
+        import shutil
+        
+        # Check multiple possible locations for the output PDB files
+        final_pdbs_dir = os.path.join(params.output_dir, 'final_pdbs')
+        
+        # Try to find PDB files in final_pdbs subdirectory first
+        if os.path.isdir(final_pdbs_dir):
+            conformer_pdbs = sorted(glob.glob(f"{final_pdbs_dir}/*.pdb"))
+            print(f"  Found {len(conformer_pdbs)} PDB files in final_pdbs/")
+        else:
+            # Fallback: look in main directory
+            conformer_pdbs = sorted(glob.glob(f"{params.output_dir}/*.pdb"))
+            print(f"  Found {len(conformer_pdbs)} PDB files in main directory")
         
         # Remove the lowest energy file from the list if it exists (it will be separate)
         conformer_pdbs = [pdb for pdb in conformer_pdbs if 'lowest_energy' not in pdb]
+        
+        # Find the lowest energy conformer
+        lowest_energy_pdb = None
+        if os.path.isdir(final_pdbs_dir):
+            lowest_energy_candidates = glob.glob(f"{final_pdbs_dir}/*lowest_energy*.pdb")
+            if lowest_energy_candidates:
+                lowest_energy_pdb = lowest_energy_candidates[0]
+        
+        # If no lowest energy found, use the first one if available
+        if not lowest_energy_pdb and conformer_pdbs:
+            lowest_energy_pdb = conformer_pdbs[0]
+        
+        # Copy or create lowest_energy_conformer.pdb in the main output directory
+        if lowest_energy_pdb and os.path.exists(lowest_energy_pdb):
+            shutil.copy(lowest_energy_pdb, output.lowest_energy)
+            print(f"✓ Copied lowest energy conformer to {output.lowest_energy}")
+        else:
+            # Create a dummy file if no lowest energy found
+            print(f"⚠ Warning: No lowest energy conformer found, creating placeholder")
+            with open(output.lowest_energy, 'w') as f:
+                f.write("# Placeholder - no lowest energy conformer found\n")
         
         # Save list of all conformers to JSON
         conformer_data = {
@@ -318,14 +356,17 @@ rule ligand_sampling:
             'num_conformers': params.num_conformers,
             'num_positions': params.num_positions,
             'expected_total': params.num_conformers * params.num_positions,
-            'conformers': conformer_pdbs
+            'conformers': conformer_pdbs,
+            'lowest_energy': output.lowest_energy
         }
         
         with open(output.conformer_list, 'w') as f:
             json.dump(conformer_data, f, indent=2)
         
-        print(f" Ligand sampling completed. Results in {params.output_dir}")
+        print(f"✓ Ligand sampling completed. Results in {params.output_dir}")
         print(f"  Generated {len(conformer_pdbs)} PDB files ({params.num_conformers} conformers × {params.num_positions} positions)")
+        if conformer_pdbs:
+            print(f"  PDB files found: {[os.path.basename(p) for p in conformer_pdbs[:3]]}{'...' if len(conformer_pdbs) > 3 else ''}")
         print(f"  Conformer list saved to {output.conformer_list}")
 
 # ============================================================================
@@ -338,7 +379,7 @@ rule generate_contig_map:
     Defines which regions of the protein will be redesigned.
     """
     input:
-        pdb_info = get_pdb_info_file
+        pdb_info = get_pdb_info_file()
     output:
         contig_map_file = f"{output_dir}/PDB_info/contig_map.json"
     params:
@@ -392,15 +433,16 @@ rule run_rf_diffusion:
     Processes all ligand conformers from the sampling step.
     """
     input:
-        pdb = get_prepared_pdb,
+        pdb = get_prepared_pdb(),
         contig_map_info = f"{output_dir}/PDB_info/contig_map.json",
         conformer_list = f"{output_dir}/ligand_sampling/conformer_list.json",
-        pdb_info = get_pdb_info_file
+        pdb_info = get_pdb_info_file()
     output:
         designs_done = f"{output_dir}/RF_designs/designs_completed.txt"
     params:
         output_dir = f"{output_dir}/RF_designs",
         rf_model = RF_model,
+        ligand_resname = ligand_resname,
         num_designs = num_designs,
         T = T,
         deterministic = deterministic,
@@ -414,7 +456,19 @@ rule run_rf_diffusion:
         path_to_RF1_script = path_to_RF1_script,
         path_to_RF1_env = path_to_RF1_env,
         # RF3 specific
-        path_to_RF3_env = path_to_RF3_env
+        path_to_RF3_env = path_to_RF3_env,
+        RF3_checkpoint_path = RF3_checkpoint_path,
+        RF3_batch_size = RF3_batch_size,
+        RF3_use_classifier_free_guidance = RF3_use_classifier_free_guidance,
+        RF3_cfg_scale = RF3_cfg_scale,
+        RF3_num_timesteps = RF3_num_timesteps,
+        RF3_step_scale = RF3_step_scale,
+        RF3_noise_scale = RF3_noise_scale,
+        RF3_gamma_0 = RF3_gamma_0,
+        RF3_gamma_min = RF3_gamma_min,
+        RF3_dump_trajectories = RF3_dump_trajectories,
+        RF3_prevalidate_inputs = RF3_prevalidate_inputs,
+        RF3_low_memory_mode = RF3_low_memory_mode
     resources:
         gpus=1
     run:
@@ -494,7 +548,20 @@ rule run_rf_diffusion:
                         pdb_info=pdb_info,
                         num_designs=params.num_designs,
                         chain_id=chain_id,
-                        path_to_RF3_env=params.path_to_RF3_env
+                        path_to_RF3_env=params.path_to_RF3_env,
+                        ligand_resname=params.ligand_resname,
+                        checkpoint_path=params.RF3_checkpoint_path,
+                        batch_size=params.RF3_batch_size,
+                        use_classifier_free_guidance=params.RF3_use_classifier_free_guidance,
+                        cfg_scale=params.RF3_cfg_scale,
+                        num_timesteps=params.RF3_num_timesteps,
+                        step_scale=params.RF3_step_scale,
+                        noise_scale=params.RF3_noise_scale,
+                        gamma_0=params.RF3_gamma_0,
+                        gamma_min=params.RF3_gamma_min,
+                        dump_trajectories=params.RF3_dump_trajectories,
+                        prevalidate_inputs=params.RF3_prevalidate_inputs,
+                        low_memory_mode=params.RF3_low_memory_mode
                     )
                 
                 completed_conformers.append({
@@ -532,6 +599,92 @@ rule run_rf_diffusion:
         print(f"Total: {len(completed_conformers)} conformers, "
               f"Completed: {sum(1 for c in completed_conformers if c['status'] == 'completed')}, "
               f"Failed: {sum(1 for c in completed_conformers if c['status'] == 'failed')}")
+
+
+# ============================================================================
+# 6. UNZIP RF DESIGN ARCHIVES INTO FINAL CIF FOLDER
+# ============================================================================
+
+rule unzip_rf_design_archives:
+    """
+    Find every .zip and .cif.gz file recursively under RF_designs,
+    extract/decompress each archive into RF_final_cif, and record completion.
+    """
+    input:
+        designs_done = f"{output_dir}/RF_designs/designs_completed.txt"
+    output:
+        unzip_done = f"{output_dir}/RF_final_cif/unzip_completed.txt"
+    params:
+        rf_designs_dir = f"{output_dir}/RF_designs",
+        rf_final_cif_dir = f"{output_dir}/RF_final_cif"
+    run:
+        Path(params.rf_final_cif_dir).mkdir(parents=True, exist_ok=True)
+
+        zip_files = []
+        cif_gz_files = []
+        for root, _, files in os.walk(params.rf_designs_dir):
+            for file_name in files:
+                if file_name.lower().endswith('.zip'):
+                    zip_files.append(os.path.join(root, file_name))
+                elif file_name.lower().endswith('.cif.gz'):
+                    cif_gz_files.append(os.path.join(root, file_name))
+
+        zip_files = sorted(zip_files)
+        cif_gz_files = sorted(cif_gz_files)
+
+        extracted_zip_count = 0
+        decompressed_cif_gz_count = 0
+
+        # Extract .zip archives
+        for zip_path in zip_files:
+            rel_parent = os.path.relpath(os.path.dirname(zip_path), params.rf_designs_dir)
+            zip_stem = Path(zip_path).stem
+
+            # Keep extracted outputs organized and avoid filename collisions.
+            if rel_parent == '.':
+                extract_dir = os.path.join(params.rf_final_cif_dir, zip_stem)
+            else:
+                extract_dir = os.path.join(params.rf_final_cif_dir, rel_parent, zip_stem)
+
+            Path(extract_dir).mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            extracted_zip_count += 1
+            print(f"✓ Extracted: {zip_path} -> {extract_dir}")
+
+        # Decompress .cif.gz files into .cif files
+        for cif_gz_path in cif_gz_files:
+            rel_parent = os.path.relpath(os.path.dirname(cif_gz_path), params.rf_designs_dir)
+            cif_name = Path(cif_gz_path).name[:-3]  # remove trailing '.gz'
+
+            if rel_parent == '.':
+                out_dir = params.rf_final_cif_dir
+            else:
+                out_dir = os.path.join(params.rf_final_cif_dir, rel_parent)
+
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            out_cif_path = os.path.join(out_dir, cif_name)
+
+            with gzip.open(cif_gz_path, 'rb') as src, open(out_cif_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+
+            decompressed_cif_gz_count += 1
+            print(f"✓ Decompressed: {cif_gz_path} -> {out_cif_path}")
+
+        with open(output.unzip_done, 'w') as f:
+            f.write("RF archive extraction completed\n")
+            f.write(f"Source directory: {params.rf_designs_dir}\n")
+            f.write(f"Destination directory: {params.rf_final_cif_dir}\n")
+            f.write(f"Zip files found: {len(zip_files)}\n")
+            f.write(f"Zip files extracted: {extracted_zip_count}\n")
+            f.write(f"CIF.GZ files found: {len(cif_gz_files)}\n")
+            f.write(f"CIF.GZ files decompressed: {decompressed_cif_gz_count}\n")
+
+        print(
+            f"\nRF archive extraction complete. "
+            f"Found {len(zip_files)} zip file(s) and {len(cif_gz_files)} cif.gz file(s)."
+        )
 
 
 

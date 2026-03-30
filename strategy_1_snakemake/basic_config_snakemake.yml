@@ -39,6 +39,10 @@ side_chain_context: 0
 first_shell_only: false
 user_defined_mpnn_redesign: null
 top_n_mpnn_candidates: 80
+# - redesign_search_radius: Search radius (Angstroms) for finding structurally matching residues when identifying modified positions
+# - redesign_rmsd_threshold: RMSD threshold (Angstroms) for considering residues as structurally matched
+redesign_search_radius: 3.0
+redesign_rmsd_threshold: 1.0
 
 ### ESM
 # - path_to_ESM_env: Path to the ESM fold environment

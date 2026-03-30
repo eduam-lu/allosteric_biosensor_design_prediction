@@ -32,7 +32,7 @@ ligand_name: "Tc"
 #   "UNL LIG ABC"   - keep UNL, LIG, and ABC residues
 ligand_resname: TDC
 
-output_dir: "/proj/berzelius-2023-361/users/x_eduam/strategy_1_campaign/runs/RFD_snakemake_trial"
+output_dir: "/proj/berzelius-2023-361/users/x_eduam/strategy_1_campaign/runs/rfd_snakemake_trial_8A_3003"
 
 # ============================================================================
 # 2. LIGAND SAMPLING PARAMETERS
@@ -57,7 +57,7 @@ translation: 0.3
 # 3. ACTIVE SITE DEFINITION PARAMETERS
 # ============================================================================
 # Distance in angstroms to define the first shell of residues around the ligand
-first_shell_distance: 5.0
+first_shell_distance: 8.0
 
 # Distance in angstroms to define the second shell of residues around the first shell
 second_shell_distance: 5.0
@@ -144,7 +144,7 @@ deterministic: true
 path_to_RF3_env: "/proj/berzelius-2023-361/users/x_eduam/.conda/envs/rfd3"
 
 # RF3 checkpoint path (default: 'rfd3' assumes it's available in the environment)
-RF3_checkpoint_path: "rfd3"
+RF3_checkpoint_path: "/proj/berzelius-2023-361/users/x_eduam/foundry/rfd3_latest.ckpt"
 
 # Batch size for RF3 designs (number of designs per batch)
 RF3_batch_size: 1

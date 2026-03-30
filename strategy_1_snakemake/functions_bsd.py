@@ -6,6 +6,7 @@ import warnings
 import os
 import sys
 import json
+import ast
 import yaml
 from Bio import PDB
 from Bio.PDB import PDBParser, MMCIFParser, DSSP, NeighborSearch, Selection, Superimposer
@@ -42,6 +43,7 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import seaborn as sns
+from snakemake.shell import shell
 
 
 
@@ -509,7 +511,11 @@ def run_rfAA(
     subprocess.run(rfAA_command, shell=True)
     return
 
-def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, num_designs_batch, chain_id='A'):
+def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, num_designs_batch, chain_id='A',
+                      checkpoint_path='rfd3', batch_size=1, use_classifier_free_guidance=False,
+                      cfg_scale=1.5, num_timesteps=200, step_scale=1.5, noise_scale=1.003,
+                      gamma_0=0.6, gamma_min=1.0, dump_trajectories=False,
+                      prevalidate_inputs=False, low_memory_mode=False):
     """
     Generate RF Diffusion 3 configuration YAML file.
     
@@ -520,131 +526,60 @@ def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, n
         ligand_resname: Name of the ligand residue
         num_designs_batch: Number of designs to generate
         chain_id: Chain ID of the protein (default 'A')
+        checkpoint_path: Path to RF3 model checkpoint (default 'rfd3')
+        batch_size: Diffusion batch size (default 1)
+        use_classifier_free_guidance: Enable CFG (default False)
+        cfg_scale: CFG scale (default 1.5)
+        num_timesteps: Number of diffusion timesteps (default 200)
+        step_scale: Step scale (default 1.5)
+        noise_scale: Noise scale (default 1.003)
+        gamma_0: Gamma 0 (default 0.6)
+        gamma_min: Gamma min (default 1.0)
+        dump_trajectories: Whether to dump trajectories (default False)
+        prevalidate_inputs: Whether to prevalidate inputs (default False)
+        low_memory_mode: Enable low memory mode (default False)
     """
-    # RF3 YAML configuration template
-    rf3_config = {
-        'defaults': ['base', {'selftarget': 'rfd3.engine.RFD3InferenceEngine'}],
-        'out_dir': 'output_path',
-        'inputs': None,
-        'ckpt_path': RF3_checkpoint_path,
-        'json_keys_subset': None,
-        'skip_existing': True,
-        'specification': {
-            'spec-1': {
-                'input': input_pdb,
-                'contig': contig_map,
-                'select_fixed_atoms': {
-                    'ligand_name': ligand_resname
-                },
-                'ligand': ligand_resname
-            }
-        },
-        # Diffusion batch arguments
-        'diffusion_batch_size': RF3_batch_size,
-        'n_batches': num_designs_batch,
-        # Inference sampler arguments
-        'inference_sampler': {
-            'kind': 'default',
-            'cfg_features': ['active_donor', 'active_acceptor', 'ref_atomwise_rasa']
-        },
-        'use_classifier_free_guidance': RF3_use_classifier_free_guidance,
-        'cfg_scale': RF3_cfg_scale,
-        'center_option': 'all',
-        's_trans': 1.0,
-        'inference_noise_scaling_factor': 1.0,
-        'allow_realignment': False,
-        # Diffusion arguments
-        'num_timesteps': RF3_num_timesteps,
-        'step_scale': RF3_step_scale,
-        'noise_scale': RF3_noise_scale,
-        'p': 7,
-        'gamma_0': RF3_gamma_0,
-        'gamma_min': RF3_gamma_min,
-        's_jitter_origin': 0.0,
-        # Saving arguments
-        'cleanup_guideposts': True,
-        'cleanup_virtual_atoms': True,
-        'read_sequence_from_sequence_head': True,
-        'output_full_json': True,
-        'global_prefix': None,
-        'dump_prediction_metadata_json': True,
-        'dump_trajectories': RF3_dump_trajectories,
-        'align_trajectory_structures': False,
-        'prevalidate_inputs': RF3_prevalidate_inputs,
-        'low_memory_mode': RF3_low_memory_mode
+    import re
+
+    def _clean_str(value):
+        """Strip outer list brackets, backslashes, and quotes from a string."""
+        if isinstance(value, (list, tuple)):
+            value = value[0] if len(value) == 1 else ",".join(map(str, value))
+        s = str(value).strip()
+        # Strip outer [ ] if present
+        if s.startswith("[") and s.endswith("]"):
+            s = s[1:-1].strip()
+        # Strip any combination of leading/trailing \, ', "
+        s = re.sub(r'^[\\\'\" ]+|[\\\'\" ]+$', '', s)
+        return s
+
+    normalized_contig = _clean_str(contig_map)
+    normalized_ligand = "UNL" # _clean_str(ligand_resname) if ligand_resname else
+
+    # Build RF3 inputs YAML (consumed by `rfd3 design inputs=<yaml>`)
+    # Format expected by process_input(): mapping of example_id -> spec dict
+    input_specs = {
+        "spec-1": {
+            "input": input_pdb,
+            "contig": normalized_contig,
+            "select_fixed_atoms": {
+                "UNL": ""
+            },
+            "ligand": normalized_ligand
+        }
     }
-    
-    # Convert to YAML with proper formatting
-    yaml_str = "# @package global\n"
-    yaml_str += "defaults:\n"
-    yaml_str += "- base\n"
-    yaml_str += "- selftarget: rfd3.engine.RFD3InferenceEngine\n\n"
-    
-    yaml_str += f"out_dir: output_path\n"
-    yaml_str += f"inputs: null\n"
-    yaml_str += f"ckpt_path: {RF3_checkpoint_path}\n"
-    yaml_str += f"json_keys_subset: null\n"
-    yaml_str += f"skip_existing: true\n\n"
-    
-    yaml_str += "#########################################################\n"
-    yaml_str += "# Design spec args: overrides args from input json\n"
-    yaml_str += "specification:\n"
-    yaml_str += "  'spec-1':\n"
-    yaml_str += f"    input: {input_pdb}\n"
-    yaml_str += f"    contig: {contig_map}\n"
-    yaml_str += f"    select_fixed_atoms:\n"
-    yaml_str += f"      ligand_name: {ligand_resname}\n"
-    yaml_str += f"    ligand: {ligand_resname}\n"
-    yaml_str += "#########################################################\n\n"
-    
-    yaml_str += "# Diffusion batch args\n"
-    yaml_str += f"diffusion_batch_size: {RF3_batch_size}\n"
-    yaml_str += f"n_batches: {num_designs_batch}\n\n"
-    
-    yaml_str += "# Inference sampler args\n"
-    yaml_str += "inference_sampler:\n"
-    yaml_str += "  kind: 'default'\n"
-    yaml_str += "  cfg_features:\n"
-    yaml_str += "    - active_donor\n"
-    yaml_str += "    - active_acceptor\n"
-    yaml_str += "    - ref_atomwise_rasa\n\n"
-    
-    yaml_str += "# Classifier-free guidance args\n"
-    yaml_str += f"use_classifier_free_guidance: {str(RF3_use_classifier_free_guidance).lower()}\n"
-    yaml_str += f"cfg_scale: {RF3_cfg_scale}\n"
-    yaml_str += "center_option: 'all'\n"
-    yaml_str += "s_trans: 1.0\n"
-    yaml_str += "inference_noise_scaling_factor: 1.0\n"
-    yaml_str += "allow_realignment: false\n\n"
-    
-    yaml_str += "# Diffusion args\n"
-    yaml_str += f"num_timesteps: {RF3_num_timesteps}\n"
-    yaml_str += f"step_scale: {RF3_step_scale}\n"
-    yaml_str += f"noise_scale: {RF3_noise_scale}\n"
-    yaml_str += "p: 7\n"
-    yaml_str += f"gamma_0: {RF3_gamma_0}\n"
-    yaml_str += f"gamma_min: {RF3_gamma_min}\n"
-    yaml_str += "s_jitter_origin: 0.0\n\n"
-    
-    yaml_str += "# Saving args\n"
-    yaml_str += "cleanup_guideposts: true\n"
-    yaml_str += "cleanup_virtual_atoms: true\n"
-    yaml_str += "read_sequence_from_sequence_head: true\n"
-    yaml_str += "output_full_json: true\n"
-    yaml_str += "global_prefix: null\n"
-    yaml_str += "dump_prediction_metadata_json: true\n"
-    yaml_str += f"dump_trajectories: {str(RF3_dump_trajectories).lower()}\n"
-    yaml_str += "align_trajectory_structures: false\n"
-    yaml_str += f"prevalidate_inputs: {str(RF3_prevalidate_inputs).lower()}\n"
-    yaml_str += f"low_memory_mode: {str(RF3_low_memory_mode).lower()}\n"
-    
-    # Write to file
+
     with open(output_yaml_path, 'w') as f:
-        f.write(yaml_str)
+        yaml.safe_dump(input_specs, f, sort_keys=False)
     
     print(f"RF3 configuration YAML generated: {output_yaml_path}")
 
-def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id, path_to_RF3_env=None):
+def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id, path_to_RF3_env=None,
+             ligand_resname='LIG',
+             checkpoint_path='rfd3', batch_size=1, use_classifier_free_guidance=False,
+             cfg_scale=1.5, num_timesteps=200, step_scale=1.5, noise_scale=1.003,
+             gamma_0=0.6, gamma_min=1.0, dump_trajectories=False,
+             prevalidate_inputs=False, low_memory_mode=False):
     """
     Execute RF Diffusion 3 design pipeline.
     
@@ -656,25 +591,111 @@ def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id
         num_designs: Number of designs to generate
         chain_id: Chain ID of the protein
         path_to_RF3_env: Optional path to RF3 environment
+        ligand_resname: Ligand residue name used by RF3 fixed-atom selection
+        checkpoint_path: Path to RF3 model checkpoint (default 'rfd3')
+        batch_size: Diffusion batch size (default 1)
+        use_classifier_free_guidance: Enable CFG (default False)
+        cfg_scale: CFG scale (default 1.5)
+        num_timesteps: Number of diffusion timesteps (default 200)
+        step_scale: Step scale (default 1.5)
+        noise_scale: Noise scale (default 1.003)
+        gamma_0: Gamma 0 (default 0.6)
+        gamma_min: Gamma min (default 1.0)
+        dump_trajectories: Whether to dump trajectories (default False)
+        prevalidate_inputs: Whether to prevalidate inputs (default False)
+        low_memory_mode: Enable low memory mode (default False)
     """
+    # Ensure input PDB has non-empty chain identifiers (RF3 requirement)
+    rf3_input_pdb = input_pdb
+    if str(input_pdb).endswith('.pdb') and os.path.isfile(input_pdb):
+        fixed_pdb_path = f"{output_path}/rf3_input_chainfixed.pdb"
+        fill_chain_id = (str(chain_id).strip() if chain_id else "A")[:1]
+        replaced_chain_count = 0
+
+        with open(input_pdb, 'r') as fin, open(fixed_pdb_path, 'w') as fout:
+            for line in fin:
+                if line.startswith(('ATOM', 'HETATM', 'ANISOU', 'TER')) and len(line) >= 22 and line[21] == ' ':
+                    line = line[:21] + fill_chain_id + line[22:]
+                    replaced_chain_count += 1
+                fout.write(line)
+
+        if replaced_chain_count > 0:
+            rf3_input_pdb = fixed_pdb_path
+            print(f"RF3 input sanitized: set chain ID '{fill_chain_id}' for {replaced_chain_count} records")
+
     # Create RF3 YAML configuration file
     yaml_path = f"{output_path}/rf3_config.yaml"
     generate_rf3_yaml(
         output_yaml_path=yaml_path,
-        input_pdb=input_pdb,
+        input_pdb=rf3_input_pdb,
         contig_map=contig_map,
-        ligand_resname=pdb_info['active_site'][0] if pdb_info.get('active_site') else 'LIG',
+        ligand_resname=ligand_resname,
         num_designs_batch=num_designs,
-        chain_id=chain_id
+        chain_id=chain_id,
+        checkpoint_path=checkpoint_path,
+        batch_size=batch_size,
+        use_classifier_free_guidance=use_classifier_free_guidance,
+        cfg_scale=cfg_scale,
+        num_timesteps=num_timesteps,
+        step_scale=step_scale,
+        noise_scale=noise_scale,
+        gamma_0=gamma_0,
+        gamma_min=gamma_min,
+        dump_trajectories=dump_trajectories,
+        prevalidate_inputs=prevalidate_inputs,
+        low_memory_mode=low_memory_mode
     )
     
-    # Build RF3 command
-    cmd = f"rfd3 design out_dir={output_path} inputs={yaml_path}"
+    # Build RF3 command (minimal, aligned with upstream usage)
+    cmd = (
+        f"rfd3 design "
+        f"inputs={yaml_path} "
+        f"out_dir={output_path} "
+        f"ckpt_path={checkpoint_path} "
+        f"diffusion_batch_size={batch_size} "
+        f"n_batches={num_designs} "
+        f"inference_sampler.kind=default "
+        f"inference_sampler.cfg_features=[active_donor,active_acceptor,ref_atomwise_rasa] "
+        f"inference_sampler.use_classifier_free_guidance={str(use_classifier_free_guidance).lower()} "
+        f"inference_sampler.cfg_scale={cfg_scale} "
+        f"inference_sampler.center_option=all "
+        f"inference_sampler.s_trans=1.0 "
+        f"inference_sampler.inference_noise_scaling_factor=1.0 "
+        f"inference_sampler.allow_realignment=false "
+        f"inference_sampler.num_timesteps={num_timesteps} "
+        f"inference_sampler.step_scale={step_scale} "
+        f"inference_sampler.noise_scale={noise_scale} "
+        f"inference_sampler.p=7 "
+        f"inference_sampler.gamma_0={gamma_0} "
+        f"inference_sampler.gamma_min={gamma_min} "
+        f"inference_sampler.s_jitter_origin=0.0 "
+        f"dump_trajectories={str(dump_trajectories).lower()} "
+        f"prevalidate_inputs={str(prevalidate_inputs).lower()} "
+        f"low_memory_mode={str(low_memory_mode).lower()} "
+        f"skip_existing=true"
+    )
+    cmd_args = cmd.replace("rfd3 ", "", 1)
     
     # Execute RF3
     if path_to_RF3_env:
-        # If environment path is provided, activate it
-        shell(f"source {path_to_RF3_env}/bin/activate && {cmd}")
+        # Support multiple env specifications:
+        # 1) full path to activate script
+        # 2) env prefix path
+        # 3) env name
+        env_spec = str(path_to_RF3_env)
+        activate_script = os.path.join(env_spec, "bin", "activate")
+        rfd3_executable = os.path.join(env_spec, "bin", "rfd3")
+
+        if env_spec.endswith("/bin/activate") and os.path.isfile(env_spec):
+            shell(f"source {env_spec} && {cmd}")
+        elif os.path.isfile(rfd3_executable):
+            shell(f"{rfd3_executable} {cmd_args}")
+        elif os.path.isfile(activate_script):
+            shell(f"source {activate_script} && {cmd}")
+        elif os.path.isdir(env_spec):
+            shell(f"conda run -p {env_spec} {cmd}")
+        else:
+            shell(f"conda run -n {env_spec} {cmd}")
     else:
         # Otherwise assume rfd3 is in PATH
         shell(cmd)
@@ -683,15 +704,41 @@ def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id
 
 ### LIGAND MPNN #######################################################################################################################################
 
-def generate_redesign_string(deNovo_path, reference_path ,region=[0,54] ,chain_id='A'):
+def generate_redesign_string(deNovo_path, reference_path, region=[0,54], chain_id='A', 
+                            search_radius=3.0, rmsd_threshold=1.0):
+    """
+    Identifies residues in de novo structure that differ from wild-type.
+    
+    Args:
+        deNovo_path: Path to RF Diffusion designed structure
+        reference_path: Path to original wild-type structure
+        region: [start, end] residue numbers for alignment anchor region
+        chain_id: Chain ID to analyze (default 'A')
+        search_radius: Search radius in Angstroms for finding matching residues (default 3.0)
+        rmsd_threshold: RMSD threshold in Angstroms for considering residues as matching (default 1.0)
+    
+    Returns:
+        String of space-separated redesign residues (e.g., "A100 A105 A110")
+    """
 
     WT_structure = load_structure(reference_path)
     dNT_structure = load_structure(deNovo_path)
+    
+    print("\n" + "="*80)
+    print("DEBUG: generate_redesign_string")
+    print("="*80)
+    print(f"DeNovo path: {deNovo_path}")
+    print(f"Reference path: {reference_path}")
+    print(f"Search radius: {search_radius} Å")
+    print(f"RMSD threshold: {rmsd_threshold} Å")
+    print(f"Alignment region: {region[0]} - {region[1]}")
     
     # Aligning Wild Type and de Novo Type by their DNA-binding domain.
     WT_atoms = []
     dNT_atoms = []
     res_index = 1
+    aligned_residues = []
+    
     for r1, r2 in zip(WT_structure[0]['A'].get_residues(), dNT_structure[0]['A'].get_residues()):
         if r1.get_id()[1] >= region[0] and r1.get_id()[1] < region[1]:
             if is_aa(r1, standard=True) and is_aa(r2, standard=True):
@@ -703,39 +750,99 @@ def generate_redesign_string(deNovo_path, reference_path ,region=[0,54] ,chain_i
                 dNT_atoms.append(r2['CA'])
                 dNT_atoms.append(r2['C'])
                 dNT_atoms.append(r2['O'])
+                aligned_residues.append(r1.get_id()[1])
                 res_index += 1
         if res_index >= region[1]:
             break
+    
+    print(f"\n✓ Aligned {len(aligned_residues)} residues for anchor: {aligned_residues[:5]}...{aligned_residues[-5:]}")
+    
     superimpose = Superimposer()
     superimpose.set_atoms(WT_atoms, dNT_atoms)
-    print(f"RMSD: {superimpose.rms}")
+    alignment_rmsd = superimpose.rms
+    print(f"✓ Alignment RMSD: {alignment_rmsd:.3f} Å")
     superimpose.apply(dNT_structure.get_atoms())
     
     # Initiate NeighborSearch object
     WT_atom_space = [atom for atom in WT_structure[0]['A'].get_atoms()]
     NSearch = NeighborSearch(WT_atom_space)
     
+    print(f"\n✓ NeighborSearch initialized with {len(WT_atom_space)} WT atoms")
+    
     # Retrieve all de Novo Type residues that do not match the Wild Type
     modified_res = ""
-    radius = 1.0
-    for res in dNT_structure[0]['A'].get_residues():
-        if is_aa(res, standard=True):
-            proximity_residues = NSearch.search(res['CA'].get_coord(), radius, level='R')
-            found_match = False
-            try:
-                res_bb = np.array([res['N'].get_coord(), res['CA'].get_coord(), res['C'].get_coord(), res['O'].get_coord()])
+    modified_list = []
+    matched_list = []
+    
+    denovo_residues = [res for res in dNT_structure[0]['A'].get_residues() if is_aa(res, standard=True)]
+    print(f"\n--- Analyzing {len(denovo_residues)} de novo residues ---\n")
+    
+    for i, res in enumerate(denovo_residues):
+        res_num = res.get_id()[1]
+        res_name = res.get_resname()
+        
+        try:
+            proximity_residues = NSearch.search(res['CA'].get_coord(), search_radius, level='R')
+        except KeyError:
+            print(f"Res {res_num}: ERROR - missing CA atom")
+            continue
+        
+        found_match = False
+        
+        try:
+            res_bb = np.array([res['N'].get_coord(), res['CA'].get_coord(), res['C'].get_coord(), res['O'].get_coord()])
+            
+            if len(proximity_residues) == 0:
+                print(f"Res {res_num} ({res_name}): NO proximity residues found (radius={search_radius}Å)")
+            else:
+                print(f"Res {res_num} ({res_name}): Found {len(proximity_residues)} proximity residues", end="")
+                
                 for prox_res in proximity_residues:
                     prox_res_bb = np.array([prox_res['N'].get_coord(), prox_res['CA'].get_coord(), prox_res['C'].get_coord(), prox_res['O'].get_coord()])
                     sup_for_rms = SVDSuperimposer()
                     sup_for_rms.set(res_bb, prox_res_bb)
                     RMS = sup_for_rms.get_init_rms()
-                    #print(f"Res: {res.get_id()[1]}, RMS = {RMS}")
-                    if RMS < 0.3 and res.get_resname() == prox_res.get_resname():
+                    
+                    prox_res_num = prox_res.get_id()[1]
+                    prox_res_name = prox_res.get_resname()
+                    
+                    # Check both RMSD and amino acid type
+                    aa_match = res_name == prox_res_name
+                    rmsd_match = RMS < rmsd_threshold
+                    
+                    if rmsd_match and aa_match:
+                        print(f" → MATCH with Res {prox_res_num} ({prox_res_name}, RMSD={RMS:.3f}✓)")
                         found_match = True
-            except KeyError as key:
-                print(f"Residue {res.get_id()[1]} is missing atom; {key}")
-            if not found_match:
-                modified_res += f" {chain_id}{res.get_id()[1]}"
+                        matched_list.append(res_num)
+                        break
+                    else:
+                        details = []
+                        if not aa_match:
+                            details.append(f"{res_name}→{prox_res_name}")
+                        if not rmsd_match:
+                            details.append(f"RMSD={RMS:.3f}✗")
+                        # print(f"   │ Res {prox_res_num}: {', '.join(details)}", end="")
+                
+                if not found_match:
+                    print(f" → NO GOOD MATCH (checking {len(proximity_residues)} residues)")
+        
+        except KeyError as key:
+            print(f"Res {res_num}: ERROR - missing atom ({key})")
+        
+        if not found_match:
+            modified_res += f" {chain_id}{res_num}"
+            modified_list.append(res_num)
+            print(f"  ➜ MARKED FOR REDESIGN")
+    
+    print("\n" + "="*80)
+    print(f"SUMMARY:")
+    print(f"  - Total residues analyzed: {len(denovo_residues)}")
+    print(f"  - Matched (unchanged): {len(matched_list)} residues")
+    print(f"  - Modified (for redesign): {len(modified_list)} residues")
+    print(f"  - Percent modified: {100*len(modified_list)/len(denovo_residues):.1f}%")
+    if len(modified_list) > 0:
+        print(f"  - Modified residue numbers: {modified_list[:10]}{'...' if len(modified_list) > 10 else ''}")
+    print("="*80 + "\n")
     
     return modified_res.strip()
 

@@ -6,6 +6,7 @@ import json
 import pandas as pd
 from pathlib import Path
 import shutil
+import math
 
 # Import your custom functions directly
 import functions_bsd as func
@@ -52,6 +53,10 @@ side_chain_context = config.get('side_chain_context', 0)
 first_shell_only = config.get('first_shell_only', False)
 user_defined_mpnn_redesign = config.get('user_defined_mpnn_redesign', None)
 top_n_mpnn_candidates = config.get('top_n_mpnn_candidates', 5)
+# - redesign_search_radius: Search radius (Angstroms) for finding structurally matching residues (default 3.0)
+# - redesign_rmsd_threshold: RMSD threshold (Angstroms) for considering residues as structurally matched (default 1.0)
+redesign_search_radius = config.get('redesign_search_radius', 3.0)
+redesign_rmsd_threshold = config.get('redesign_rmsd_threshold', 1.0)
 
 
 ### ESM
@@ -198,7 +203,14 @@ rule generate_mpnn_jsons:
 
             # multi pdb
             data_dict[str(pdb_file)] = ""
-            redesigned_residues_dict[str(pdb_file)] = func.generate_redesign_string(deNovo_path=pdb_file, reference_path=structure_path, region=[0,54], chain_id='A')
+            redesigned_residues_dict[str(pdb_file)] = func.generate_redesign_string(
+                deNovo_path=pdb_file, 
+                reference_path=structure_path, 
+                region=[0,54], 
+                chain_id='A',
+                search_radius=redesign_search_radius,
+                rmsd_threshold=redesign_rmsd_threshold
+            )
         
         # Generate json files
         json.dump(data_dict, open(output.rf_paths_json, "w"))
@@ -232,8 +244,8 @@ rule split_mpnn_jsons:
         paths_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json", split_id=SPLIT_IDS),
         res_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json", split_id=SPLIT_IDS)
     run:
-        import json
-        import math
+        
+        
         
         with open(input.paths_json, 'r') as f: paths = json.load(f)
         with open(input.res_json, 'r') as f: res = json.load(f)

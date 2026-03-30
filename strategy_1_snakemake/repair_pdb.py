@@ -131,26 +131,27 @@ def parse_structure(structure_path):
         return None
 
 
-def filter_chain_a_only(protein):
+def filter_keep_chains_a_and_d(protein):
     """
-    Filter protein to keep only chain A.
+    Filter protein to keep chains A and D (if present).
+    Chain A is the protein, chain D is the ligand.
     Removes all other chains if present.
     
     Args:
         protein: ProDy Protein object
     
     Returns:
-        Filtered ProDy Protein object (chain A only)
+        Filtered ProDy Protein object (chains A and D, or just A if D not present)
     """
     chains = protein.getChids()
     unique_chains = set(chains)
     
-    if len(unique_chains) == 1 and 'A' in unique_chains:
-        logger.info("Protein has only chain A. No filtering needed.")
-        return protein
+    # Check what we have available
+    has_a = 'A' in unique_chains
+    has_d = 'D' in unique_chains
     
-    if 'A' not in unique_chains:
-        logger.warning(f"Protein has no chain A! Chains present: {unique_chains}")
+    if not has_a and not has_d:
+        logger.warning(f"Protein has neither chain A nor D! Chains present: {unique_chains}")
         logger.warning("Attempting to rename first chain to A...")
         if len(unique_chains) > 0:
             first_chain = list(unique_chains)[0]
@@ -158,18 +159,52 @@ def filter_chain_a_only(protein):
             logger.info(f"Renamed chain {first_chain} to A")
         return protein
     
-    # Select only chain A
-    chain_a = protein.select('chain A')
-    if chain_a is None or len(chain_a) == 0:
-        logger.error("Failed to select chain A")
-        return protein
+    # Determine which chains to keep
+    chains_to_keep = []
+    if has_a:
+        chains_to_keep.append('A')
+    if has_d:
+        chains_to_keep.append('D')
     
-    removed_chains = unique_chains - {'A'}
-    logger.info(f"Filtering structure to keep only chain A. Removed chains: {removed_chains}")
+    # Build selection string
+    if not has_a and has_d:
+        # Only D exists, rename it to A
+        logger.info("Chain A not found; chain D will be kept as is (ligand)")
+        chain_d = protein.select('chain D')
+        if chain_d is None or len(chain_d) == 0:
+            logger.error("Failed to select chain D")
+            return protein
+        filtered_protein = chain_d.copy()
+    elif has_a and not has_d:
+        # Only A exists
+        logger.info("Chain A found. Chain D (ligand) not found. Keeping chain A only.")
+        chain_a = protein.select('chain A')
+        if chain_a is None or len(chain_a) == 0:
+            logger.error("Failed to select chain A")
+            return protein
+        filtered_protein = chain_a.copy()
+    else:
+        # Both A and D exist
+        logger.info("Both chain A (protein) and chain D (ligand) found. Keeping both.")
+        chain_a = protein.select('chain A')
+        chain_d = protein.select('chain D')
+        
+        if chain_a is None or len(chain_a) == 0:
+            logger.error("Failed to select chain A")
+            return protein
+        if chain_d is None or len(chain_d) == 0:
+            logger.error("Failed to select chain D")
+            return protein
+        
+        # Merge both chains - combine A and D
+        chain_a_copy = chain_a.copy()
+        chain_d_copy = chain_d.copy()
+        filtered_protein = chain_a_copy + chain_d_copy
     
-    # Convert Selection to a properly initialized AtomGroup
-    # Use copy() to ensure all metadata is preserved
-    filtered_protein = chain_a.copy()
+    removed_chains = unique_chains - set(chains_to_keep)
+    if removed_chains:
+        logger.info(f"Removed chains: {removed_chains}")
+    
     return filtered_protein
 
 
@@ -525,6 +560,55 @@ def write_repaired_pdb(protein, gaps, output_path):
     # A full implementation would add the missing residues
     writePDB(str(output_path), protein)
     logger.info(f"Wrote repaired PDB to {output_path}")
+    
+    # Fix occupancy values (some atoms may have 0.0 occupancy after CIF conversion)
+    fix_occupancy_in_pdb(str(output_path))
+
+
+def fix_occupancy_in_pdb(pdb_path):
+    """
+    Fix occupancy values in PDB file. 
+    Sets occupancy to 1.0 for all ATOM records that have occupancy < 1.0.
+    This is necessary because CIF-to-PDB conversion via biopython sometimes
+    creates atoms with partial or zero occupancy, which get filtered out by
+    structure prediction tools like LigandMPNN.
+    
+    Args:
+        pdb_path: Path to PDB file to fix
+    """
+    # Read the PDB file
+    with open(pdb_path, 'r') as f:
+        lines = f.readlines()
+    
+    # Fix occupancy values
+    fixed_lines = []
+    occupancy_fixed = 0
+    
+    for line in lines:
+        if line.startswith('ATOM'):
+            # PDB format: occupancy is at columns 54-60 (1-indexed: 55-60)
+            try:
+                occupancy_str = line[54:60]
+                occupancy = float(occupancy_str)
+                
+                if occupancy < 1.0:
+                    # Replace occupancy with 1.00
+                    # Format: 6 characters, right-aligned, 2 decimal places
+                    fixed_occupancy = " " * 2 + "1.00"  # 6 characters with 1.00
+                    line = line[:54] + fixed_occupancy + line[60:]
+                    occupancy_fixed += 1
+            except (ValueError, IndexError):
+                pass  # Skip if conversion fails
+        
+        fixed_lines.append(line)
+    
+    # Write the fixed PDB file
+    with open(pdb_path, 'w') as f:
+        f.writelines(fixed_lines)
+    
+    if occupancy_fixed > 0:
+        logger.info(f"Fixed occupancy for {occupancy_fixed} atoms in {Path(pdb_path).name}")
+
 
 
 def repair_pdb_and_update_redesign_list(pdb_path, redesign_residues_dict, output_dir=None):
@@ -577,8 +661,8 @@ def repair_pdb_and_update_redesign_list(pdb_path, redesign_residues_dict, output
             logger.error(result['report'])
             return result
         
-        # Filter to chain A only
-        protein = filter_chain_a_only(protein)
+        # Filter to keep chains A and D (protein + ligand)
+        protein = filter_keep_chains_a_and_d(protein)
         
         # Repair missing backbone atoms (N, C)
         protein = repair_missing_backbone_atoms(protein)
@@ -729,11 +813,11 @@ def batch_repair_and_update_jsons(pdb_paths_json, redesigned_residues_json, outp
         
         all_results[pdb_name] = result
         
+        # Determine the output path (use repaired if successful, else original)
+        output_pdb_path = result['output_pdb'] if (result['success'] and result['output_pdb']) else str(pdb_path)
+        
         # Update paths: maintain LigandMPNN format (path as key, "" as value)
-        if result['success'] and result['output_pdb']:
-            updated_pdb_paths[result['output_pdb']] = ""
-        else:
-            updated_pdb_paths[pdb_path] = ""
+        updated_pdb_paths[output_pdb_path] = ""
         
         # Convert updated redesign dict back to string format for output
         # Format: "A100 A105 A110 B50" (chain + resnum space-separated)
@@ -746,8 +830,8 @@ def batch_repair_and_update_jsons(pdb_paths_json, redesigned_residues_json, outp
         
         updated_redesign_str = " ".join(redesign_string_parts)
         
-        # Store with path as key (matching pdb_paths format)
-        updated_redesign_residues[pdb_path] = updated_redesign_str
+        # Store with OUTPUT path as key (must match pdb_paths keys!)
+        updated_redesign_residues[output_pdb_path] = updated_redesign_str
     
     # Write updated JSONs
     updated_pdb_json = output_dir / "pdb_paths_multi_repaired.json"
