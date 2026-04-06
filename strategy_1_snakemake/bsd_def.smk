@@ -7,9 +7,11 @@ import pandas as pd
 from pathlib import Path
 import shutil
 import math
+import time
+import fcntl
 
 # Import your custom functions directly
-import functions_bsd as func
+import functions_snakemake_bsd as func
 from ligand_sampling import sample_conformers 
 from repair_pdb import batch_repair_and_update_jsons
 # -----------------------------------------------------------------------------
@@ -146,6 +148,53 @@ site_residues_check_cofold = [('A', res) for res in [60, 64, 67, 82, 86, 100, 10
 # - top_n_gnina_final: Number of designs to be selected after the final round of filtering based on GNINA scores
 top_n_score_final = config.get('top_n_score_final', 5)
 top_n_gnina_final = config.get('top_n_gnina_final', 2)
+
+GPU_LOCK_DIR = os.path.join(OUTPUT_DIR, ".gpu_leases")
+
+
+def get_visible_gpu_tokens(default_count=GPUS):
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cuda_visible:
+        return [token.strip() for token in cuda_visible.split(",") if token.strip()]
+    return [str(i) for i in range(default_count)]
+
+
+def acquire_pipeline_gpu(lock_dir=GPU_LOCK_DIR, default_count=GPUS, poll_interval=5):
+    os.makedirs(lock_dir, exist_ok=True)
+    gpu_tokens = get_visible_gpu_tokens(default_count=default_count)
+
+    if not gpu_tokens:
+        raise RuntimeError("No visible GPU tokens available for this pipeline job.")
+
+    while True:
+        for gpu_token in gpu_tokens:
+            safe_token = gpu_token.replace("/", "_")
+            lock_path = os.path.join(lock_dir, f"gpu_{safe_token}.lock")
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.ftruncate(fd, 0)
+                os.write(fd, f"pid={os.getpid()} gpu={gpu_token}\n".encode())
+                return gpu_token, fd
+            except BlockingIOError:
+                os.close(fd)
+        time.sleep(poll_interval)
+
+
+def release_pipeline_gpu(lock_fd):
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def make_gpu_env(gpu_token, extra_env=None):
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_token)
+    # Note: Older PyTorch versions don't support expandable_segments, so skip advanced options
+    if extra_env:
+        env.update(extra_env)
+    return env
 
 # -----------------------------------------------------------------------------
 # 1. RULE ALL
@@ -290,27 +339,32 @@ rule run_ligand_mpnn_hybrid:
             has_keys = len(json.load(f)) > 0
             
         if has_keys:
-            # Using your global Python variables perfectly here
-            cmd_parts = [
-                f"conda run -p {path_to_ligand_MPNN_env} python {path_to_ligand_MPNN_script}",
-                f"--pdb_path_multi {input.paths_json}",
-                f"--out_folder {params.out_folder}",
-                f"--save_stats 1",
-                f"--batch_size {MPNN_num_designs}",
-                f"--number_of_batches {n_batches}",
-                f"--model_type {mpnn_model_type}",
-                f"--checkpoint_ligand_mpnn {path_to_mpnn_model}",
-                f"--temperature {mpnn_temperature}",
-                f"--ligand_mpnn_use_side_chain_context {side_chain_context}",
-                f"--redesigned_residues_multi \"{input.res_json}\""
-            ]
-            
-            if omit_aa_global:
-                cmd_parts.append(f"--omit_AA {omit_aa_global}")
-            if bias_aa_global:
-                cmd_parts.append(f"--bias_AA {bias_aa_global}")
-                
-            shell(" ".join(cmd_parts))
+            gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+            try:
+                print(f"[gpu-pin] rule=run_ligand_mpnn_hybrid split={wildcards.split_id} gpu={gpu_token} host={os.uname().nodename}")
+                # Using your global Python variables perfectly here
+                cmd_parts = [
+                    f"conda run -p {path_to_ligand_MPNN_env} python {path_to_ligand_MPNN_script}",
+                    f"--pdb_path_multi {input.paths_json}",
+                    f"--out_folder {params.out_folder}",
+                    f"--save_stats 1",
+                    f"--batch_size {MPNN_num_designs}",
+                    f"--number_of_batches {n_batches}",
+                    f"--model_type {mpnn_model_type}",
+                    f"--checkpoint_ligand_mpnn {path_to_mpnn_model}",
+                    f"--temperature {mpnn_temperature}",
+                    f"--ligand_mpnn_use_side_chain_context {side_chain_context}",
+                    f"--redesigned_residues_multi \"{input.res_json}\""
+                ]
+
+                if omit_aa_global:
+                    cmd_parts.append(f"--omit_AA {omit_aa_global}")
+                if bias_aa_global:
+                    cmd_parts.append(f"--bias_AA {bias_aa_global}")
+
+                shell(f"export CUDA_VISIBLE_DEVICES='{gpu_token}'; {' '.join(cmd_parts)}")
+            finally:
+                release_pipeline_gpu(gpu_lock_fd)
         else:
             print(f"Chunk {wildcards.split_id} is empty. Skipping LigandMPNN execution.")
             shell(f"mkdir -p {output.seqs_dir}")
@@ -384,22 +438,30 @@ rule run_esmfold_hybrid:
         esm_out_dir = directory(f"{OUTPUT_DIR}/ESM_predictions/split_{{split_id}}/pdbs")
     resources:
         gpu = 1
-    shell:
-        """
-        # 1. Stop Python from loading conflicting packages from ~/.local
-        export PYTHONNOUSERSITE=1
-        
-        LINES=$(wc -l < {input.split_csv})
-        if [ "$LINES" -gt "1" ]; then
-            # 2. Force the execution to happen INSIDE the ESM environment!
-            singularity exec --nv {path_to_ESM_image} python3 {path_to_ESM_script} \
-                --input_csv {input.split_csv} \
-                --output_folder {output.esm_out_dir}
-        else
-            echo "Split {wildcards.split_id} is empty. Skipping ESMfold."
-            mkdir -p {output.esm_out_dir}
-        fi
-        """
+    run:
+        from snakemake.shell import shell
+
+        with open(input.split_csv, 'r') as f:
+            lines = sum(1 for _ in f)
+
+        if lines > 1:
+            gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+            try:
+                print(f"[gpu-pin] rule=run_esmfold_hybrid split={wildcards.split_id} gpu={gpu_token} host={os.uname().nodename}")
+                shell(
+                    f"""
+                    export PYTHONNOUSERSITE=1
+                    export CUDA_VISIBLE_DEVICES='{gpu_token}'
+                    singularity exec --nv {path_to_ESM_image} python3 {path_to_ESM_script} \
+                        --input_csv {input.split_csv} \
+                        --output_folder {output.esm_out_dir}
+                    """
+                )
+            finally:
+                release_pipeline_gpu(gpu_lock_fd)
+        else:
+            print(f"Split {wildcards.split_id} is empty. Skipping ESMfold.")
+            shell(f"mkdir -p {output.esm_out_dir}")
 
 # --- C. Gather the PDBs back into one folder ---
 # This ensures that the downstream checkpoint doesn't need to be rewritten 
@@ -553,18 +615,28 @@ rule prep_boltz_yaml:
         survivors_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
     output:
         yaml = f"{OUTPUT_DIR}/boltz_yamls/{{survivor_id}}.yaml"
+    param:
+        use_msa_boltz = use_msa_boltz,
     run:
         df = pd.read_csv(input.survivors_csv)
         row = df[df['file_ID'] == wildcards.survivor_id].iloc[0]
-        
-        # Using your global Python variables
-        func.boltz_yaml_generator(
-            row=row, 
-            yaml_path=f"{OUTPUT_DIR}/boltz_yamls", 
-            ligand_smiles=ligand_smiles, 
-            pocket_list=binding_pocket, 
-            max_dist=max_dist
-        )
+        if params.use_msa_boltz:
+            func.boltz_yaml_generator_w_msa(
+                row=row, 
+                yaml_path=f"{OUTPUT_DIR}/boltz_yamls", 
+                ligand_smiles=ligand_smiles, 
+                pocket_list=binding_pocket, 
+                max_dist=max_dist
+            )
+        else:
+            func.boltz_yaml_generator(
+                row=row, 
+                yaml_path=f"{OUTPUT_DIR}/boltz_yamls", 
+                ligand_smiles=ligand_smiles, 
+                pocket_list=binding_pocket, 
+                max_dist=max_dist
+            )
+
 
 #rule run_boltz:
 rule run_boltz:
@@ -574,38 +646,58 @@ rule run_boltz:
         done_flag = f"{OUTPUT_DIR}/BOLTZ_raw/{{survivor_id}}/.done"
     benchmark:
         f"{OUTPUT_DIR}/benchmarks/boltz/{{survivor_id}}.tsv"
+    params:
+        path_to_boltz_env = path_to_boltz_env,
+        output_dir_base = OUTPUT_DIR,
+        devices = devices,
+        recycling_steps = recycling_steps,
+        sampling_steps = sampling_steps,
+        diffusion_samples = diffusion_samples,
+        output_format = output_format,
+        sampling_steps_affinity = sampling_steps_affinity,
+        use_msa_boltz = use_msa_boltz,
+        use_forces = use_forces,
+        no_kernels = no_kernels
     resources:
         gpu = devices
     run:
         from snakemake.shell import shell
         import os
 
-        cmd_parts = [
-            f"conda run -p {path_to_boltz_env} boltz predict",
-            f"{input.yaml}",
-            f"--out_dir={OUTPUT_DIR}/BOLTZ_raw",
-            f"--devices={devices}",
-            f"--recycling_steps={recycling_steps}",
-            f"--sampling_steps={sampling_steps}",
-            f"--diffusion_samples={diffusion_samples}",
-            f"--output_format={output_format}",
-            f"--sampling_steps_affinity={sampling_steps_affinity}"
-        ]
+        gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+        try:
+            print(f"[gpu-pin] rule=run_boltz survivor={wildcards.survivor_id} gpu={gpu_token} host={os.uname().nodename}")
 
-        if use_msa_boltz:
-            cmd_parts.append("--use_msa_server")
-        if use_forces:
-            cmd_parts.append("--use_potentials")
-        if no_kernels:
-            cmd_parts.append("--no_kernels")
+            cmd_parts = [
+                f"conda run -p {params.path_to_boltz_env} boltz predict",
+                f"{input.yaml}",
+                f"--out_dir={params.output_dir_base}/BOLTZ_raw",
+                f"--devices={params.devices}",
+                f"--recycling_steps={params.recycling_steps}",
+                f"--sampling_steps={params.sampling_steps}",
+                f"--diffusion_samples={params.diffusion_samples}",
+                f"--output_format={params.output_format}",
+                f"--sampling_steps_affinity={params.sampling_steps_affinity}"
+            ]
 
-        shell(" ".join(cmd_parts))
+            if params.use_msa_boltz:
+                cmd_parts.append("--use_msa_server")
+                cmd_parts.append("--msa_pairing_strategy=greedy")
+            if params.use_forces:
+                cmd_parts.append("--use_potentials")
+            if params.no_kernels:
+                cmd_parts.append("--no_kernels")
 
-        os.makedirs(f"{OUTPUT_DIR}/BOLTZ_raw/{wildcards.survivor_id}", exist_ok=True)
-        with open(output.done_flag, "w") as f:
-            f.write("done")
-
-        os.remove(input.yaml)
+            # Run Boltz
+            shell(f"export CUDA_VISIBLE_DEVICES='{gpu_token}'; {' '.join(cmd_parts)}")
+            
+            # Mark completion and clean up YAML
+            os.makedirs(os.path.dirname(output.done_flag), exist_ok=True)
+            with open(output.done_flag, "w") as f:
+                f.write("done")
+            os.remove(input.yaml)
+        finally:
+            release_pipeline_gpu(gpu_lock_fd)
 
 # rule process_boltz_folder:
 rule process_boltz_folder:
@@ -677,26 +769,34 @@ rule run_second_prediction:
     resources:
         gpu = 1
     run:
+        import os
+
         df = pd.read_csv(input.survivors_csv)
         row = df[df['file_ID'] == wildcards.survivor_id].iloc[0]
         
         model = config["model_flag"]
         msa = config["msa_flag"]
+        gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+        rule_env = make_gpu_env(gpu_token)
         
-        # Run the appropriate model into the base OUTPUT_DIR 
-        # (Your functions automatically create 'CHAI_prediction', 'CHAI_cofold', etc. inside it)
-        if model == "CHAI":
-            if msa:
-                func.run_chai_w_MSA(row, f"{OUTPUT_DIR}/{model}_prediction/{wildcards.survivor_id}")
-                func.run_chai_cofold_w_MSA(row, f"{OUTPUT_DIR}/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"])
-            else:
-                func.run_chai(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_prediction/{wildcards.survivor_id}")
-                func.run_chai_cofold(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"])
-        elif model == "AF3":
-            func.run_AlphaFold3(row, f"{OUTPUT_DIR}", msa_flag=msa, ligand_SMILES=config["ligand_smiles"])
+        try:
+            print(f"[gpu-pin] rule=run_second_prediction survivor={wildcards.survivor_id} gpu={gpu_token} host={os.uname().nodename}")
+
+            # Run the appropriate model into the base OUTPUT_DIR 
+            # (Your functions automatically create 'CHAI_prediction', 'CHAI_cofold', etc. inside it)
+            if model == "CHAI":
+                if msa:
+                    func.run_chai_w_MSA(row, f"{OUTPUT_DIR}/{model}_prediction/{wildcards.survivor_id}", env=rule_env)
+                    func.run_chai_cofold_w_MSA(row, f"{OUTPUT_DIR}/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"], env=rule_env)
+                else:
+                    func.run_chai(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_prediction/{wildcards.survivor_id}", env=rule_env)
+                    func.run_chai_cofold(row, f"{OUTPUT_DIR}/{model}_predictions/{model}_cofold/{wildcards.survivor_id}", config["ligand_smiles"], env=rule_env)
+            elif model == "AF3":
+                func.run_AlphaFold3(row, f"{OUTPUT_DIR}", msa_flag=msa, ligand_SMILES=config["ligand_smiles"], env=rule_env)
+        finally:
+            release_pipeline_gpu(gpu_lock_fd)
             
         # Create the flag file so the processing rule knows this sequence finished
-        import os
         os.makedirs(os.path.dirname(output.done_flag), exist_ok=True)
         with open(output.done_flag, "w") as f:
             f.write("done")
@@ -745,75 +845,84 @@ rule gather_final_candidates:
     resources:
         gpu = 1
     run:
-        # 1. Boltz
-        boltz_df = func.threed_params_1_df(
-            folder=input.boltz_pdbs, 
-            output_folder=OUTPUT_DIR,
-            output_name="BOLTZ_predictions.csv",
-            original_path=structure_path, 
-            clash_distance=clash_distance, 
-            bond_distance=bond_distance,
-            ligand_path=input.best_ligand_pdb, 
-            gnina_path=gnina_path,
-            cnn=gnina_cnn,
-            exhaustiveness=gnina_exhaustiveness,
-            gnina_box_size=gnina_box_size,
-            gnina_pocket_residues=site_residues_check_cofold
-        )
-        boltz_df = func.check_cofold_validity(boltz_df, f"{OUTPUT_DIR}/BOLTZ_pdbs", "LIG", site_residues_check_cofold, extension=".pdb")
-        boltz_df.to_csv(output.boltz_csv, index=False)
-        # 2. Regular
-        reg_df = func.threed_params_1_df(
-            folder=input.reg_pdbs,
-            output_folder=OUTPUT_DIR,
-            output_name=f"{model_flag}_predictions.csv",
-            original_path=structure_path, 
-            clash_distance=clash_distance, 
-            bond_distance=bond_distance,
-            ligand_path=input.best_ligand_pdb, 
-            gnina_path=gnina_path,
-            cnn=gnina_cnn,
-            exhaustiveness=gnina_exhaustiveness,
-            gnina_box_size=gnina_box_size,
-            gnina_pocket_residues=site_residues_check_cofold
-        )
-        reg_df.to_csv(output.second_regular_csv, index=False)
-        # 3. Cofold
-        cofold_df = func.threed_params_1_df(
-            folder=input.cofold_pdbs, 
-            output_folder=OUTPUT_DIR,
-            output_name=f"{model_flag}_cofold_predictions.csv",
-            original_path=structure_path, 
-            clash_distance=clash_distance, 
-            bond_distance=bond_distance,
-            ligand_path=input.best_ligand_pdb, 
-            gnina_path=gnina_path,
-            cnn=gnina_cnn,
-            exhaustiveness=gnina_exhaustiveness,
-            gnina_box_size=gnina_box_size,
-            gnina_pocket_residues=site_residues_check_cofold
-        )
-        cofold_df = func.check_cofold_validity(cofold_df, f"{OUTPUT_DIR}/{model_flag}_pdbs", "LIG2", site_residues_check_cofold, extension=".cif")
-        cofold_df.to_csv(output.second_cofold_csv, index=False)
-        # 4. Final selection using your global Python variables perfectly
-        func.threed_filter_2_df(
-            df_list=[reg_df, cofold_df, boltz_df], 
-            output_folder=OUTPUT_DIR,
-            output_names=[f'final_{model_flag}_predictions.csv', f'final_{model_flag}_cofold.csv', 'final_BOLTZ.csv'],
-            weights=global_score_weights, 
-            min_plddt=MIN_PLDDT_1, 
-            min_rmsd=MIN_RMSD_1, 
-            max_rmsd=MAX_RMSD_1, 
-            max_clashes=MAX_CLASHES_1, 
-            top_n_score=top_n_score_final,
-            top_n_gnina=top_n_gnina_final
-        )
+        # Acquire GPU token for gnina scoring
+        os.makedirs(f"{OUTPUT_DIR}/.gpu_leases", exist_ok=True)
+        gpu_token, fd = acquire_pipeline_gpu()
+        gpu_env = make_gpu_env(gpu_token)
+        print(f"[gpu-pin] gather_final_candidates using gpu_token={gpu_token}, hostname={os.environ.get('HOSTNAME', 'unknown')}")
+        
+        try:
+            # 1. Boltz
+            boltz_df = func.threed_params_1_df(
+                folder=input.boltz_pdbs, 
+                output_folder=f"{OUTPUT_DIR}/BOLTZ_Gnina_minimized",
+                output_name="BOLTZ_predictions.csv",
+                original_path=structure_path, 
+                clash_distance=clash_distance, 
+                bond_distance=bond_distance,
+                ligand_path=input.best_ligand_pdb, 
+                gnina_path=gnina_path,
+                cnn=gnina_cnn,
+                exhaustiveness=gnina_exhaustiveness,
+                gnina_box_size=gnina_box_size,
+                gnina_pocket_residues=site_residues_check_cofold
+            )
+            boltz_df = func.check_cofold_validity(boltz_df, f"{OUTPUT_DIR}/BOLTZ_pdbs", "LIG", site_residues_check_cofold, extension=".pdb")
+            boltz_df.to_csv(output.boltz_csv, index=False)
+            # 2. Regular
+            reg_df = func.threed_params_1_df(
+                folder=input.reg_pdbs,
+                output_folder=f"{OUTPUT_DIR}/{model_flag}_prediction_Gnina_minimized",
+                output_name=f"{model_flag}_predictions.csv",
+                original_path=structure_path, 
+                clash_distance=clash_distance, 
+                bond_distance=bond_distance,
+                ligand_path=input.best_ligand_pdb, 
+                gnina_path=gnina_path,
+                cnn=gnina_cnn,
+                exhaustiveness=gnina_exhaustiveness,
+                gnina_box_size=gnina_box_size,
+                gnina_pocket_residues=site_residues_check_cofold
+            )
+            reg_df.to_csv(output.second_regular_csv, index=False)
+            # 3. Cofold
+            cofold_df = func.threed_params_1_df(
+                folder=input.cofold_pdbs, 
+                output_folder=f"{OUTPUT_DIR}/{model_flag}_cofold_Gnina_minimized",
+                output_name=f"{model_flag}_cofold_predictions.csv",
+                original_path=structure_path, 
+                clash_distance=clash_distance, 
+                bond_distance=bond_distance,
+                ligand_path=input.best_ligand_pdb, 
+                gnina_path=gnina_path,
+                cnn=gnina_cnn,
+                exhaustiveness=gnina_exhaustiveness,
+                gnina_box_size=gnina_box_size,
+                gnina_pocket_residues=site_residues_check_cofold
+            )
+            cofold_df = func.check_cofold_validity(cofold_df, f"{OUTPUT_DIR}/{model_flag}_pdbs", "LIG2", site_residues_check_cofold, extension=".cif")
+            cofold_df.to_csv(output.second_cofold_csv, index=False)
+            # 4. Final selection using your global Python variables perfectly
+            func.threed_filter_2_df(
+                df_list=[reg_df, cofold_df, boltz_df], 
+                output_folder=OUTPUT_DIR,
+                output_names=[f'final_{model_flag}_predictions.csv', f'final_{model_flag}_cofold.csv', 'final_BOLTZ.csv'],
+                weights=global_score_weights, 
+                min_plddt=MIN_PLDDT_1, 
+                min_rmsd=MIN_RMSD_1, 
+                max_rmsd=MAX_RMSD_1, 
+                max_clashes=MAX_CLASHES_1, 
+                top_n_score=top_n_score_final,
+                top_n_gnina=top_n_gnina_final
+            )
 
-        # Faul proof if no survivors pass the filter
-        if not os.path.exists(output.final_summary):
-            print("Creating empty final summary file to satisfy Snakemake")
-            with open(output.final_summary, 'w') as f:
-                f.write("No sequences survived the final filtering thresholds.\n")
+            # Faul proof if no survivors pass the filter
+            if not os.path.exists(output.final_summary):
+                print("Creating empty final summary file to satisfy Snakemake")
+                with open(output.final_summary, 'w') as f:
+                    f.write("No sequences survived the final filtering thresholds.\n")
+        finally:
+            release_pipeline_gpu(fd)
 
 # -----------------------------------------------------------------------------
 # 8. PHASE 7: GENERATE VISUALISATIONS
@@ -1008,9 +1117,6 @@ rule plot_metric_distributions:
             labels={"Metric": "7. Boltz Affinity Binary"}
         )
     run:
-        import pandas as pd
-        from pathlib import Path
-        import functions_bsd as func
         
         # Ensure output directory exists
         plot_dir = Path(output.plddt_plot).parent
@@ -1095,14 +1201,22 @@ rule report_validity_and_candidates:
         # Ensure output directory exists
         Path(output.summary_txt).parent.mkdir(parents=True, exist_ok=True)
 
-        # 1. Read the data
+        # 1. Read the data with error handling for empty files
         df_cofold = pd.read_csv(input.second_cofold_csv)
         df_boltz = pd.read_csv(input.boltz_csv)
         df_final = pd.read_csv(input.final_filtered_csv)
 
+        # Check if dataframes are empty or missing required columns
+        if len(df_cofold) == 0:
+            df_cofold = pd.DataFrame(columns=['is_valid', 'file_ID'])
+        if len(df_boltz) == 0:
+            df_boltz = pd.DataFrame(columns=['is_valid', 'file_ID'])
+        if len(df_final) == 0:
+            df_final = pd.DataFrame(columns=['file_ID', 'sequence'])
+
         # 2. Process cofold validities (filtering for True)
-        valid_cofold = df_cofold[df_cofold['is_valid'] == True]
-        valid_boltz = df_boltz[df_boltz['is_valid'] == True]
+        valid_cofold = df_cofold[df_cofold['is_valid'] == True] if 'is_valid' in df_cofold.columns else pd.DataFrame()
+        valid_boltz = df_boltz[df_boltz['is_valid'] == True] if 'is_valid' in df_boltz.columns else pd.DataFrame()
 
         # 3. Format the text report lines
         lines = []
@@ -1114,19 +1228,23 @@ rule report_validity_and_candidates:
         # Second Model (Cofold)
         lines.append("--- SECOND MODEL (COFOLD) ---")
         lines.append(f"Total Valid Predictions: {len(valid_cofold)} / {len(df_cofold)}")
-        if len(valid_cofold) > 0:
+        if len(valid_cofold) > 0 and 'file_ID' in valid_cofold.columns:
             lines.append("Valid IDs:")
             for vid in valid_cofold['file_ID']:
                 lines.append(f"  - {vid}")
+        elif len(df_cofold) == 0:
+            lines.append("No data available for validation.")
         lines.append("")
 
         # Boltz Model
         lines.append("--- BOLTZ MODEL ---")
         lines.append(f"Total Valid Predictions: {len(valid_boltz)} / {len(df_boltz)}")
-        if len(valid_boltz) > 0:
+        if len(valid_boltz) > 0 and 'file_ID' in valid_boltz.columns:
             lines.append("Valid IDs:")
             for vid in valid_boltz['file_ID']:
                 lines.append(f"  - {vid}")
+        elif len(df_boltz) == 0:
+            lines.append("No data available for validation.")
         lines.append("")
 
         # Final Filtered Candidates
@@ -1137,12 +1255,22 @@ rule report_validity_and_candidates:
         lines.append("")
         
         if len(df_final) > 0:
-            seq_col = 'sequence' if 'sequence' in df_final.columns else 'seq'
+            # Determine which sequence column is available
+            seq_col = None
+            if 'sequence' in df_final.columns:
+                seq_col = 'sequence'
+            elif 'seq' in df_final.columns:
+                seq_col = 'seq'
+            elif 'Sequence' in df_final.columns:
+                seq_col = 'Sequence'
             
-            for _, row in df_final.iterrows():
-                lines.append(f"> {row['file_ID']}")
-                lines.append(f"  {row[seq_col]}")
-                lines.append("")
+            if 'file_ID' in df_final.columns and seq_col:
+                for _, row in df_final.iterrows():
+                    lines.append(f"> {row['file_ID']}")
+                    lines.append(f"  {row[seq_col]}")
+                    lines.append("")
+            else:
+                lines.append("Final candidates present but missing expected columns (file_ID or sequence).")
         else:
             lines.append("No final candidates survived the filters.")
 

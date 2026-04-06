@@ -25,7 +25,7 @@ from snakemake.shell import shell
 
 # Import functions from functions_bsd.py
 sys.path.insert(0, os.path.dirname(__file__))
-import functions_bsd as func
+import functions_snakemake_rfd as func
 
 # ============================================================================
 # CONFIGURATION LOADING

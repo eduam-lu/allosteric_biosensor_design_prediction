@@ -19,6 +19,12 @@ import biotite.structure.io as bsio
 from biotite.structure.io import load_structure as biotite_load_structure
 
 # Biopython loader for generate_redesign_string function
+
+# ============================================================================
+# ACTIVE FUNCTIONS FOR BSD PIPELINE
+# 39 functions: 18 root + 21 helper/dependency functions
+# ============================================================================
+
 def load_structure(pdb_path):
     """Load PDB or CIF structure files using appropriate parser."""
     pdb_path_str = str(pdb_path).lower()
@@ -53,57 +59,6 @@ from snakemake.shell import shell
 
 ### PDB INFO EXTRACTION ###########################################################################################################################
 
-def extract_pdb_info(pdb_path, 
-                    first_shell_distance=5.0, second_shell_distance=5.0, 
-                    user_defined_active_site=None, user_defined_residues=None):
-    # Extract chain id
-    chain_id = get_chain_id(pdb_path)
-    # Extract sequence
-    sequence_dict = extract_sequence(pdb_path, chain_id)
-    # Extract DSSP
-    dssp_string = extract_dssp_string(pdb_path)
-    # Define active site
-    active_site_dict = define_active_site(pdb_path, 
-                                          first_shell_distance=5.0, second_shell_distance=5.0, 
-                                          user_defined_active_site=None, user_defined_residues=None)
-    # Prepare final dictionary
-    pdb_info = {
-        "pdb_id": sequence_dict["pdb_id"],
-        "chain_id": chain_id,
-        "sequence_seqres": sequence_dict["seqres"],
-        "sequence_coordinate": sequence_dict["coordinate_sequence"],
-        "residue_count": sequence_dict["residue_count"],
-        "found_residues": sequence_dict["found_residues"],
-        "missing_residues": sequence_dict["missing_residues"],
-        "missing_positions": sequence_dict["missing_positions"],
-        "start_residue_number": sequence_dict["start_residue_number"],
-        "sequence_length": sequence_dict["sequence_length"],
-        "dssp_string": dssp_string,
-        "active_site": active_site_dict["active_site"],
-        "first_shell": active_site_dict["first_shell"],
-        "second_shell": active_site_dict["second_shell"],
-        "user_defined_active_site": active_site_dict["user_defined_active_site"],
-        "user_defined_residues": active_site_dict["user_defined_residues"]
-    }
-    printable_pdb_info = {
-        "pdb_id": sequence_dict["pdb_id"],
-        "chain_id": chain_id,
-        "sequence_seqres": sequence_dict["seqres"],
-        "sequence_coordinate": sequence_dict["coordinate_sequence"],
-        "residue_count": str(sequence_dict["residue_count"]),
-        "found_residues": str(sequence_dict["found_residues"]),
-        "missing_residues": str(sequence_dict["missing_residues"]),
-        "missing_positions": str(sequence_dict["missing_positions"]),
-        "start_residue_number": str(sequence_dict["start_residue_number"]),
-        "sequence_length": str(sequence_dict["sequence_length"]),
-        "dssp_string": dssp_string,
-        "active_site": str(active_site_dict["active_site"]),
-        "first_shell": str(active_site_dict["first_shell"]),
-        "second_shell": str(active_site_dict["second_shell"]),
-        "user_defined_active_site": str(active_site_dict["user_defined_active_site"]),
-        "user_defined_residues": str(active_site_dict["user_defined_residues"])
-    }
-    return pdb_info, printable_pdb_info
 
 def get_chain_id(pdb_path):
     """
@@ -126,6 +81,7 @@ def get_chain_id(pdb_path):
             return chains[0].id
             
     return None
+
 
 
 def extract_sequence(pdb_path, chain_id='A'):
@@ -195,6 +151,7 @@ def extract_sequence(pdb_path, chain_id='A'):
         "sequence_length": len(coord_seq)
     }
 
+
 def get_seqres_sequence(structure, chain_id='A'):
     """
     Retrieves the SEQRES sequence from the PDB header.
@@ -206,6 +163,7 @@ def get_seqres_sequence(structure, chain_id='A'):
             # Biopython stores this as a sequence string
             return str(seqres_dict[chain_id])
     return None
+
 
 def get_coordinate_sequence(chain):
     """
@@ -246,6 +204,7 @@ def get_coordinate_sequence(chain):
     
     return final_seq, residue_count
 
+
 def extract_dssp_string(input_file):
     # Parse the PDB file
     parser = PDBParser(QUIET=True)
@@ -260,6 +219,7 @@ def extract_dssp_string(input_file):
     dssp_codes = ''.join([dssp[key][2] for key in dssp.keys()])
 
     return dssp_codes
+
 
 def define_active_site(pdb_path,user_defined_active_site=None, user_defined_residues = None, first_shell_distance=5.0, second_shell_distance=5.0):
     # If active site already defined, return it. Ensures desired residues remain too
@@ -285,6 +245,7 @@ def define_active_site(pdb_path,user_defined_active_site=None, user_defined_resi
             "second_shell": second_shell,
             "user_defined_active_site": user_defined_active_site,
             "user_defined_residues": user_defined_residues}
+
 
 def detect_first_shell(pdb_path, distance=5.0):
     """
@@ -314,6 +275,7 @@ def detect_first_shell(pdb_path, distance=5.0):
     stored = []
     cmd.iterate("near_ligand", "stored.append(resi)", space={'stored': stored})
     return sorted(set(int(res.strip()) for res in stored if res.strip().isdigit()))
+
 
 def detect_second_shell(pdb_path, input_residues, distance=5.0):
     """
@@ -363,346 +325,6 @@ def detect_second_shell(pdb_path, input_residues, distance=5.0):
     result = sorted(neighbors_set - input_set_int)
     return result
 
-def list_to_contig_map(chain_id, seq_length, active_site, missing_residues, start, 
-                       segment_extension,n_termini_extension, c_termini_extension, 
-                       conservative_RF =False, DSSP_string = None, user_defined_contig_map = None):
-    # If you want to have a conservative and an aggresive rf diffusion here's where you do it
-    # I might calculate a DSSP string and remove every residue that is in a helix or sheet from the redesign list
-    # Account for missing residues in the PDB file
-    # Check if the user gave a contig map already
-    if user_defined_contig_map is not None:
-        print("CONTIG WARNING: Using user defined contig map for RF diffusion redesign.")
-        return user_defined_contig_map
-    
-    # If there are any missing residue positions, we add them to the active site for redesign
-    if missing_residues:
-        for pos in missing_residues:
-            if pos not in active_site and pos > start:
-                active_site.append(pos-1)
-    
-    # Define segments (accounting for conservative/aggresive redesign)
-    if conservative_RF:
-        segments = define_conservative_segments(active_site, DSSP_string) # TO BE IMPLEMENTED
-    else:
-        segments = define_aggresive_segments(active_site) 
-        print(f"Found segments: {segments}")
-    
-    # Find chain breaks (TO BE IMPLEMENTED)
-
-    # Assemble contig map
-    elements = [rf"[\'{n_termini_extension}-{n_termini_extension}"]  # N-termini extension
-    element_start = start
-    for seg_start, seg_length in segments:
-        element = f"{chain_id}{element_start}-{seg_start}"
-        extension = f"{seg_length}-{seg_length + segment_extension}"
-        elements.append(element)
-        elements.append(extension)
-        element_start = seg_start + seg_length + 1
-    element = f"{chain_id}{element_start}-{seq_length}"
-    elements.append(element)
-    if c_termini_extension is None:
-        elements[-1] = elements[-1] + rf"\']"
-    else:
-        elements.append(rf"{c_termini_extension}-{c_termini_extension}\']")
-    contig_map = ",".join(elements)
-    return contig_map,segments
-
-
-def define_conservative_segments(active_site, DSSP_string):
-    # Define segments based on active site and DSSP string
-    return
-
-def define_aggresive_segments(active_site):
-    """
-    Groups consecutive numbers in active_site into (start, length) tuples.
-    """
-    # 1. Sort and remove duplicates to ensure logic works
-    active_site = sorted(list(set(active_site)))
-    
-    segments = []
-    i = 0
-    n = len(active_site)
-    
-    while i < n:
-        segment_start = active_site[i]
-        segment_length = 1
-        
-        # Look ahead: while the next number exists AND is exactly current + 1
-        while (i + 1 < n) and (active_site[i + 1] == active_site[i] + 1):
-            segment_length += 1
-            i += 1 # Advance the index as we consume consecutive numbers
-            
-        segments.append((segment_start, segment_length))
-        
-        # Move to the next number to start a new segment check
-        i += 1
-
-    return segments
-
-
-
-
-### RF diffusion ###############################################################################################################################    
-
-def run_rf1(
-        output_path,
-        input_pdb,
-        contig_map,
-        num_designs,
-        T,
-        path_to_RF1_script= "~/RFdiffusion/scripts/run_inference.py",
-        path_to_RF1_env="/home/eduardo/mambaforge/envs/"
-):
-    
-    
-    # Create output directory if it doesn't exist
-    Path(f"{output_path}/RF1_designs").mkdir(parents=True, exist_ok=True)
-
-    # Adapt contig map format for RF1 (remove brackets and quotes)
-    contig_map = str(contig_map).replace(r"\'","").replace(",","/")
-
-    # Prepare RF1 command
-    rf1_command = (
-        f'export MKL_THREADING_LAYER=GNU && conda run -p {path_to_RF1_env} python '
-        f' {path_to_RF1_script} '
-        f'inference.output_prefix="{output_path}/RF1_designs/{str(input_pdb).split("/")[-1].split(".pdb")[0]}_RFdesign" '
-        f'inference.input_pdb="{input_pdb}" '
-        f'contigmap.contigs="{contig_map}" '
-        f'inference.num_designs={num_designs} '
-        f'diffuser.T={T}'
-    )
-    subprocess.run(rf1_command, shell=True)
-    return
-
-def run_rfAA(
-        output_path,
-        input_pdb,
-        contig_map,
-        num_designs,
-        T,
-        path_to_RFAA_apptainer ="/home/eduardo/allostery/rf_diffusion_all_atom/rf_se3_diffusion.sif",
-        path_to_RFAA_script ="/home/eduardo/allostery/rf_diffusion_all_atom/run_inference.py" ,
-        path_to_RFAA_weights = "/home/eduardo/allostery/rf_diffusion_all_atom/RFDiffusionAA_paper_weights.pt",
-        inference_ligand='UNL',
-        design_startnum=0,
-        deterministic=True
-):
-
-
-
-    # Create output directory if it doesn't exist
-    Path(f"{output_path}/RFallatom_designs").mkdir(parents=True, exist_ok=True)
-
-    # Prepare RF-AA command
-    rfAA_command = (
-        f'apptainer exec --nv {path_to_RFAA_apptainer} '
-        f'python -u {path_to_RFAA_script} '  
-        f'inference.output_prefix={output_path}/RFallatom_designs/{str(input_pdb).split("/")[-1].split(".pdb")[0]}_RFdesign '
-        f'inference.input_pdb={input_pdb} '
-        f'inference.num_designs={num_designs} '
-        f'diffuser.T={T} '
-        f'contigmap.contigs={contig_map} '
-        f'inference.ligand={inference_ligand} '
-        f'inference.design_startnum={design_startnum} '
-        f'inference.ckpt_path={path_to_RFAA_weights} '
-        f'inference.deterministic={str(deterministic).lower()} ' # Hydra/RFAA usually expects lowercase true/false
-    )
-    print(rfAA_command)
-    subprocess.run(rfAA_command, shell=True)
-    return
-
-def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, num_designs_batch, chain_id='A',
-                      checkpoint_path='rfd3', batch_size=1, use_classifier_free_guidance=False,
-                      cfg_scale=1.5, num_timesteps=200, step_scale=1.5, noise_scale=1.003,
-                      gamma_0=0.6, gamma_min=1.0, dump_trajectories=False,
-                      prevalidate_inputs=False, low_memory_mode=False):
-    """
-    Generate RF Diffusion 3 configuration YAML file.
-    
-    Args:
-        output_yaml_path: Path where to save the YAML file
-        input_pdb: Path to input PDB structure
-        contig_map: Contig map string for RF3 format
-        ligand_resname: Name of the ligand residue
-        num_designs_batch: Number of designs to generate
-        chain_id: Chain ID of the protein (default 'A')
-        checkpoint_path: Path to RF3 model checkpoint (default 'rfd3')
-        batch_size: Diffusion batch size (default 1)
-        use_classifier_free_guidance: Enable CFG (default False)
-        cfg_scale: CFG scale (default 1.5)
-        num_timesteps: Number of diffusion timesteps (default 200)
-        step_scale: Step scale (default 1.5)
-        noise_scale: Noise scale (default 1.003)
-        gamma_0: Gamma 0 (default 0.6)
-        gamma_min: Gamma min (default 1.0)
-        dump_trajectories: Whether to dump trajectories (default False)
-        prevalidate_inputs: Whether to prevalidate inputs (default False)
-        low_memory_mode: Enable low memory mode (default False)
-    """
-    import re
-
-    def _clean_str(value):
-        """Strip outer list brackets, backslashes, and quotes from a string."""
-        if isinstance(value, (list, tuple)):
-            value = value[0] if len(value) == 1 else ",".join(map(str, value))
-        s = str(value).strip()
-        # Strip outer [ ] if present
-        if s.startswith("[") and s.endswith("]"):
-            s = s[1:-1].strip()
-        # Strip any combination of leading/trailing \, ', "
-        s = re.sub(r'^[\\\'\" ]+|[\\\'\" ]+$', '', s)
-        return s
-
-    normalized_contig = _clean_str(contig_map)
-    normalized_ligand = "UNL" # _clean_str(ligand_resname) if ligand_resname else
-
-    # Build RF3 inputs YAML (consumed by `rfd3 design inputs=<yaml>`)
-    # Format expected by process_input(): mapping of example_id -> spec dict
-    input_specs = {
-        "spec-1": {
-            "input": input_pdb,
-            "contig": normalized_contig,
-            "select_fixed_atoms": {
-                "UNL": ""
-            },
-            "ligand": normalized_ligand
-        }
-    }
-
-    with open(output_yaml_path, 'w') as f:
-        yaml.safe_dump(input_specs, f, sort_keys=False)
-    
-    print(f"RF3 configuration YAML generated: {output_yaml_path}")
-
-def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id, path_to_RF3_env=None,
-             ligand_resname='LIG',
-             checkpoint_path='rfd3', batch_size=1, use_classifier_free_guidance=False,
-             cfg_scale=1.5, num_timesteps=200, step_scale=1.5, noise_scale=1.003,
-             gamma_0=0.6, gamma_min=1.0, dump_trajectories=False,
-             prevalidate_inputs=False, low_memory_mode=False):
-    """
-    Execute RF Diffusion 3 design pipeline.
-    
-    Args:
-        output_path: Path where to save RF3 outputs
-        input_pdb: Path to input PDB structure
-        contig_map: Contig map string for RF3 format
-        pdb_info: Dictionary with PDB information (must have 'active_site' key)
-        num_designs: Number of designs to generate
-        chain_id: Chain ID of the protein
-        path_to_RF3_env: Optional path to RF3 environment
-        ligand_resname: Ligand residue name used by RF3 fixed-atom selection
-        checkpoint_path: Path to RF3 model checkpoint (default 'rfd3')
-        batch_size: Diffusion batch size (default 1)
-        use_classifier_free_guidance: Enable CFG (default False)
-        cfg_scale: CFG scale (default 1.5)
-        num_timesteps: Number of diffusion timesteps (default 200)
-        step_scale: Step scale (default 1.5)
-        noise_scale: Noise scale (default 1.003)
-        gamma_0: Gamma 0 (default 0.6)
-        gamma_min: Gamma min (default 1.0)
-        dump_trajectories: Whether to dump trajectories (default False)
-        prevalidate_inputs: Whether to prevalidate inputs (default False)
-        low_memory_mode: Enable low memory mode (default False)
-    """
-    # Ensure input PDB has non-empty chain identifiers (RF3 requirement)
-    rf3_input_pdb = input_pdb
-    if str(input_pdb).endswith('.pdb') and os.path.isfile(input_pdb):
-        fixed_pdb_path = f"{output_path}/rf3_input_chainfixed.pdb"
-        fill_chain_id = (str(chain_id).strip() if chain_id else "A")[:1]
-        replaced_chain_count = 0
-
-        with open(input_pdb, 'r') as fin, open(fixed_pdb_path, 'w') as fout:
-            for line in fin:
-                if line.startswith(('ATOM', 'HETATM', 'ANISOU', 'TER')) and len(line) >= 22 and line[21] == ' ':
-                    line = line[:21] + fill_chain_id + line[22:]
-                    replaced_chain_count += 1
-                fout.write(line)
-
-        if replaced_chain_count > 0:
-            rf3_input_pdb = fixed_pdb_path
-            print(f"RF3 input sanitized: set chain ID '{fill_chain_id}' for {replaced_chain_count} records")
-
-    # Create RF3 YAML configuration file
-    yaml_path = f"{output_path}/rf3_config.yaml"
-    generate_rf3_yaml(
-        output_yaml_path=yaml_path,
-        input_pdb=rf3_input_pdb,
-        contig_map=contig_map,
-        ligand_resname=ligand_resname,
-        num_designs_batch=num_designs,
-        chain_id=chain_id,
-        checkpoint_path=checkpoint_path,
-        batch_size=batch_size,
-        use_classifier_free_guidance=use_classifier_free_guidance,
-        cfg_scale=cfg_scale,
-        num_timesteps=num_timesteps,
-        step_scale=step_scale,
-        noise_scale=noise_scale,
-        gamma_0=gamma_0,
-        gamma_min=gamma_min,
-        dump_trajectories=dump_trajectories,
-        prevalidate_inputs=prevalidate_inputs,
-        low_memory_mode=low_memory_mode
-    )
-    
-    # Build RF3 command (minimal, aligned with upstream usage)
-    cmd = (
-        f"rfd3 design "
-        f"inputs={yaml_path} "
-        f"out_dir={output_path} "
-        f"ckpt_path={checkpoint_path} "
-        f"diffusion_batch_size={batch_size} "
-        f"n_batches={num_designs} "
-        f"inference_sampler.kind=default "
-        f"inference_sampler.cfg_features=[active_donor,active_acceptor,ref_atomwise_rasa] "
-        f"inference_sampler.use_classifier_free_guidance={str(use_classifier_free_guidance).lower()} "
-        f"inference_sampler.cfg_scale={cfg_scale} "
-        f"inference_sampler.center_option=all "
-        f"inference_sampler.s_trans=1.0 "
-        f"inference_sampler.inference_noise_scaling_factor=1.0 "
-        f"inference_sampler.allow_realignment=false "
-        f"inference_sampler.num_timesteps={num_timesteps} "
-        f"inference_sampler.step_scale={step_scale} "
-        f"inference_sampler.noise_scale={noise_scale} "
-        f"inference_sampler.p=7 "
-        f"inference_sampler.gamma_0={gamma_0} "
-        f"inference_sampler.gamma_min={gamma_min} "
-        f"inference_sampler.s_jitter_origin=0.0 "
-        f"dump_trajectories={str(dump_trajectories).lower()} "
-        f"prevalidate_inputs={str(prevalidate_inputs).lower()} "
-        f"low_memory_mode={str(low_memory_mode).lower()} "
-        f"skip_existing=true"
-    )
-    cmd_args = cmd.replace("rfd3 ", "", 1)
-    
-    # Execute RF3
-    if path_to_RF3_env:
-        # Support multiple env specifications:
-        # 1) full path to activate script
-        # 2) env prefix path
-        # 3) env name
-        env_spec = str(path_to_RF3_env)
-        activate_script = os.path.join(env_spec, "bin", "activate")
-        rfd3_executable = os.path.join(env_spec, "bin", "rfd3")
-
-        if env_spec.endswith("/bin/activate") and os.path.isfile(env_spec):
-            shell(f"source {env_spec} && {cmd}")
-        elif os.path.isfile(rfd3_executable):
-            shell(f"{rfd3_executable} {cmd_args}")
-        elif os.path.isfile(activate_script):
-            shell(f"source {activate_script} && {cmd}")
-        elif os.path.isdir(env_spec):
-            shell(f"conda run -p {env_spec} {cmd}")
-        else:
-            shell(f"conda run -n {env_spec} {cmd}")
-    else:
-        # Otherwise assume rfd3 is in PATH
-        shell(cmd)
-    
-    print(f"RF3 design completed. Output: {output_path}")
-
-### LIGAND MPNN #######################################################################################################################################
 
 def generate_redesign_string(deNovo_path, reference_path, region=[0,54], chain_id='A', 
                             search_radius=3.0, rmsd_threshold=1.0):
@@ -847,98 +469,6 @@ def generate_redesign_string(deNovo_path, reference_path, region=[0,54], chain_i
     return modified_res.strip()
 
 
-def generate_MPNN_jsons(pdb_folder, output_json,
-                                    user_redesign_list, first_shell, chain_id, original_seq,segments, start_position,
-                                    first_shell_only=True):
-    
-    # If output already exists and is not empty skip this function
-    if os.path.exists(output_json) and any(os.scandir(output_json)) > 0 :
-        print(f"MPNN JSON files already exists at {output_json}. Skipping generation.")
-        return
-    
-    # Create output directory if it doesn't exist
-    Path(output_json).mkdir(parents=True, exist_ok=True)
-    
-    # If first shell, generate the list for first shell
-    if first_shell_only:
-        first_shell_list = [f'{chain_id}{res}'for res in first_shell]
-        first_shell_string = " ".join(first_shell_list)
-    
-    # Parse the pdb folder and generate json with pdb paths
-    pdb_files = list(Path(pdb_folder).glob("*.pdb"))
-    pdb_files.extend(list(Path(pdb_folder).glob("*.cif")))  # Also support CIF files
-    
-    data_dict = {}
-    redesigned_residues_dict = {}
-
-    for pdb_file in pdb_files:
-        # Use filename (without extension) as identifier for redesign dict
-        pdb_name = Path(pdb_file).stem
-        
-        # multi pdb - LigandMPNN format: full path as key, empty string as value
-        data_dict[str(pdb_file)] = ""
-
-        # multiredesigns
-        if first_shell_only:
-            redesigned_residues_dict[pdb_name] = first_shell_list
-        else:
-            redesigned_residues_dict[pdb_name] = generate_redesign_string(pdb_file, original_seq, segments, start_position, chain_id='A')
-
-    # Generate json files
-    json.dump(data_dict, open(f"{output_json}/pdb_paths_multi.json", "w"))
-    json.dump(redesigned_residues_dict, open(f"{output_json}/redesigned_residues_multi.json", "w"))
-    return
-
-def run_ligand_MPNN(output_folder, num_designs, n_batches, path_to_ligand_MPNN_script, path_to_ligand_MPNN_env,json_path,
-                    model_type, temperature, bias_aa_global, omit_aa_global, side_chain_context,model_path):
-    
-    # Check if output already exists and is not empty
-    if os.path.exists(output_folder) and any(f.name.endswith('seqs') for f in os.scandir(output_folder)):
-        print(f"MPNN designs already exists at {output_folder}. Skipping generation.")
-        return
-    
-    # Prepare ligand MPNN command
-    ligand_MPNN_command = (
-        f'conda run -p {path_to_ligand_MPNN_env} python '
-        f' {path_to_ligand_MPNN_script} '
-        f'--pdb_path_multi {json_path}/pdb_paths_multi.json '
-        f'--out_folder {output_folder} '
-        f'--save_stats 1 '
-        f'--batch_size {num_designs} '
-        f'--number_of_batches {n_batches} '
-        f'--model_type {model_type} '
-        f'--checkpoint_ligand_mpnn {model_path} '
-        f'--temperature {temperature} '
-        f'--ligand_mpnn_use_side_chain_context {side_chain_context} '
-        f'--redesigned_residues_multi "{json_path}/redesigned_residues_multi.json" '
-    )
-
-    # Append global bias if given
-    if omit_aa_global:
-        ligand_MPNN_command += f'--omit_AA {omit_aa_global} '
-
-    # Append global bias if given
-    if bias_aa_global:
-        ligand_MPNN_command += f'--bias_AA {bias_aa_global}  '
-
-    # Append fixed residues if the file exists
-    fixed_residues_file = os.path.join(json_path, "fix_residues_multi.json")
-    if os.path.exists(fixed_residues_file):
-        ligand_MPNN_command += f'--fixed_residues_multi "{fixed_residues_file}" '
-    
-    # Append multi omit AA per residue if the file exists
-    omit_AA_per_residue_multi_file = os.path.join(json_path, "omit_AA_per_residue_multi.json")
-    if os.path.exists(omit_AA_per_residue_multi_file):
-        ligand_MPNN_command += f'--omit_AA_per_residue_multi "{omit_AA_per_residue_multi_file}" '
-    
-    # Append multi bias AA per residue if the file exists
-    bias_AA_per_residue_multi_file = os.path.join(json_path, "bias_AA_per_residue_multi.json")
-    if os.path.exists(bias_AA_per_residue_multi_file):
-        ligand_MPNN_command += f'--bias_AA_per_residue_multi "{bias_AA_per_residue_multi_file}" '
-
-    subprocess.run(ligand_MPNN_command, shell=True)
-
-    return
 
 def process_MPNN_folder(folder,top_n):
 
@@ -950,6 +480,7 @@ def process_MPNN_folder(folder,top_n):
         sequence_df = pd.concat([sequence_df, file_df], ignore_index = True)
 
     return sequence_df
+
 
 def process_MPNN_file(file, top_n, select_by='avg_MPNN_score'):
     """Process a single MPNN output file.
@@ -1011,24 +542,6 @@ def process_MPNN_file(file, top_n, select_by='avg_MPNN_score'):
 
 ### Folding models ###############################################################################################################################
 
-def run_ESMfold(input_csv,output_folder,path_to_ESM_env,path_to_ESM_script):
-    # 1. Convert to Path object first
-    out_path = Path(output_folder)
-
-    # 2. Check using .is_dir() (safer than .exists) and .iterdir()
-    if out_path.is_dir() and any(out_path.iterdir()):
-        print(f"ESM predictions already exists at {output_folder}. Skipping generation.")
-        return
-    
-    # Prepare command for running the ESM script
-    ESM_command = (
-        f'conda run -p {path_to_ESM_env} python3 -u {path_to_ESM_script} --input_csv {input_csv} --output_folder {output_folder}'
-    )
-    subprocess.run(ESM_command, shell=True, check=True)
-    return
-
-def compute_msa():
-    return
 
 def AF_json_generator_wo_MSA(row, json_path):
     file_name = row['file_ID']
@@ -1055,74 +568,12 @@ def AF_json_generator_wo_MSA(row, json_path):
     with open(f"{json_path}/temp.json", "w") as f:
         json.dump(json_data, f, indent=2)
 
+
 def AF_json_generator_w_MSA(row, json_path):
     return
 
-def AF_json_generator_cofold(row,ligand_SMILES, json_path):
-    file_name = row['file_ID']
-    seq = row['sequence']
 
-    json_data = {
-        "name": f"{file_name}",
-        "sequences": [
-            {
-                "protein": {
-                    "id": "A",
-                    "sequence": seq,
-                    "unpairedMsa": f">dummy\n{seq}\n",  
-                    "pairedMsa": "",                    
-                    "templates": []
-                }
-            },
-            {
-                "ligand": {
-                    "id": "L",
-                    "smiles": ligand_SMILES
-                }
-            }
-        ],
-        "modelSeeds": [1],
-        "dialect": "alphafold3",
-        "version": 1
-    }
-
-    with open(f"{json_path}/temp_cofold.json", "w") as f:
-        json.dump(json_data, f, indent=2)
-    return
-
-def AF_json_generator_cofold_w_MSA(row,ligand_SMILES, json_path):
-    file_name = row['file_ID']
-    seq = row['sequence']
-
-    json_data = {
-        "name": f"{file_name}",
-        "sequences": [
-            {
-                "protein": {
-                    "id": "A",
-                    "sequence": seq,
-                    "unpairedMsa": f">dummy\n{seq}\n",  
-                    "pairedMsa": "",                    
-                    "templates": []
-                }
-            },
-            {
-                "ligand": {
-                    "id": "L",
-                    "smiles": ligand_SMILES
-                }
-            }
-        ],
-        "modelSeeds": [1],
-        "dialect": "alphafold3",
-        "version": 1
-    }
-
-    with open(f"{json_path}/temp_cofold.json", "w") as f:
-        json.dump(json_data, f, indent=2)
-    return
-
-def run_AlphaFold3(row, output_path,msa_flag=False,ligand_SMILES=None):
+def run_AlphaFold3(row, output_path,msa_flag=False,ligand_SMILES=None, env=None):
     # Create temporary JSON file
     if msa_flag:
         AF_json_generator_w_MSA(row, output_path)
@@ -1154,10 +605,14 @@ def run_AlphaFold3(row, output_path,msa_flag=False,ligand_SMILES=None):
     current_env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
     # Execute
+    if env:
+        current_env.update(env)
+
     subprocess.run(af_command, shell=True, env=current_env)
     subprocess.run(af_command_cofold, shell=True, env=current_env)
 
-def run_chai(row, output_path):
+
+def run_chai(row, output_path, env=None):
     # Ensure output path exists
     Path(output_path).mkdir(parents=True, exist_ok=True)
     # 
@@ -1172,11 +627,12 @@ def run_chai(row, output_path):
         f.write(f"{sequence}\n")         # The actual sequence
     # Run chai
     chai_command =f" conda run -n chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
-    chai_process = subprocess.run(chai_command, shell=True)
+    chai_process = subprocess.run(chai_command, shell=True, env=env)
 
     return 
 
-def run_chai_w_MSA(row, output_path):
+
+def run_chai_w_MSA(row, output_path, env=None):
     #
     Path(output_path).mkdir(parents=True, exist_ok=True)
     #
@@ -1191,11 +647,12 @@ def run_chai_w_MSA(row, output_path):
         f.write(f"{sequence}\n")         # The actual sequence
     # Run chai
     chai_command =f" conda run -n chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
-    chai_process = subprocess.run(chai_command, shell=True)
+    chai_process = subprocess.run(chai_command, shell=True, env=env)
 
     return 
 
-def run_chai_cofold(row, output_path,ligand_smiles):
+
+def run_chai_cofold(row, output_path,ligand_smiles, env=None):
     #
     Path(f"{output_path}").mkdir(parents=True, exist_ok=True)
     #
@@ -1212,11 +669,12 @@ def run_chai_cofold(row, output_path,ligand_smiles):
         f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
     # Run chai
     chai_command =f" conda run -n chai chai-lab fold {fasta_path} {output_path}/{file_name.lower()}" 
-    chai_process = subprocess.run(chai_command, shell=True)
+    chai_process = subprocess.run(chai_command, shell=True, env=env)
 
     return 
 
-def run_chai_cofold_w_MSA(row, output_path,ligand_smiles):
+
+def run_chai_cofold_w_MSA(row, output_path,ligand_smiles, env=None):
     #
     Path(f"{output_path}").mkdir(parents=True, exist_ok=True)
     #
@@ -1233,9 +691,10 @@ def run_chai_cofold_w_MSA(row, output_path,ligand_smiles):
         f.write(f"{ligand_smiles}\n")         # The actual ligand SMILES
     # Run chai
     chai_command =f" conda run -n chai chai-lab fold --use-msa-server --use-templates-server {fasta_path} {output_path}/{file_name.lower()}" 
-    chai_process = subprocess.run(chai_command, shell=True)
+    chai_process = subprocess.run(chai_command, shell=True, env=env)
 
     return 
+
 
 def boltz_yaml_generator(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.0):
     """
@@ -1325,154 +784,92 @@ def boltz_yaml_generator(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.
     
     return file_output
 
-def run_Boltz2(row,ligand_smiles, output_path,pocket_list, max_dist, use_msa=True, use_forces=True, no_kernels=False,
-                path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",devices=1, recycling_steps=3, sampling_steps=100, diffusion_samples=1, output_format='pdb', sampling_steps_affinity=100):
-    # Generate the yaml for this row
-    yaml_path = boltz_yaml_generator(row, output_path, ligand_smiles, pocket_list, max_dist)
-    # Base command with mandatory flags
-    command_parts = [
-        f"conda run -n boltz boltz predict",
-        f"{yaml_path}",
-        f"--out_dir={output_path}",
-        f"--devices={devices}",
-        f"--recycling_steps={recycling_steps}",
-        f"--sampling_steps={sampling_steps}",
-        f"--diffusion_samples={diffusion_samples}",
-        f"--output_format={output_format}",
-        f"--sampling_steps_affinity={sampling_steps_affinity}"
-    ]
-
-    # Conditional flags
-    if use_msa:
-        command_parts.append("--use_msa_server")
-    
-    if use_forces:
-        command_parts.append("--use_potentials")
-        
-    if no_kernels:
-        command_parts.append("--no_kernels")
-
-    # Join all parts into a single string
-    boltz_command = " ".join(command_parts)
-    
-    # Run the process
-    boltz_process = subprocess.run(boltz_command, shell=True)
-    # Remove yaml file
-
-    return boltz_process
-
-
-def second_prediction_round(
-    df, 
-    model_flag, 
-    MSA_flag, 
-    ligand_smiles, 
-    output_path,
-    args_output, 
-    # Boltz specific parameters
-    pocket_list=None, 
-    max_dist=5.0,
-    use_msa_boltz=False,
-    use_forces=True, 
-    no_kernels=True,
-    path_to_boltz_env="/home/eduardo/mambaforge/envs/boltz",
-    devices=1, 
-    recycling_steps=3, 
-    sampling_steps=100, 
-    diffusion_samples=1, 
-    output_format='pdb', 
-    sampling_steps_affinity=100
-):
+def boltz_yaml_generator_w_msa(row, yaml_path, ligand_smiles, pocket_list, max_dist=5.0):
     """
-    Runs Boltz 2 unconditionally (with full parameter support), 
-    plus either AF3 or CHAI based on model_flag.
+    Generates a Boltz-compatible YAML file for protein-ligand complexes.
+    
+    Args:
+        row (dict/Series): Must contain 'file_ID' and 'sequence'.
+        yaml_path (str): Directory to save the YAML.
+        ligand_smiles (str): SMILES string for the ligand.
+        pocket_list (list): List of contacts [[CHAIN, RES_IDX], ...]
+        max_dist (float): Maximum distance for pocket constraints.
     """
+    file_id = row['file_ID']
+    seq = row['sequence']
     
-    # Check if the user-selected model output already exists
-    if os.path.exists(f"{output_path}") and any(os.scandir(f"{output_path}")):
-        print(f"{model_flag} predictions already exists at {output_path}. Skipping generation.")
-        return
-    
-    # Create folders for the selected model
-    #Path(f"{output_path}/{model_flag}_prediction").mkdir(parents=True, exist_ok=True)
-    #Path(f"{output_path}/{model_flag}_cofold").mkdir(parents=True, exist_ok=True)
-    
-    # Create folder for Boltz (Always required)
-    Path(f"{args_output}/BOLTZ_prediction").mkdir(parents=True, exist_ok=True)
-    
-    # Validate the selectable model flag
-    if model_flag not in ['AF3', 'CHAI','BOLTZ_ONLY']:
-        print("Error: Model flag must be either 'AF3' or 'CHAI'")
-        sys.exit(1)
-    
-    for index, row in df.iterrows():
-        
-        # ---------------------------------------------------------
-        # 1. Run Boltz 2 (ALWAYS)
-        # ---------------------------------------------------------
-        # Ensure pocket_list is a list (even if empty) to avoid errors
-        current_pockets = pocket_list if pocket_list is not None else []
-        run_Boltz2(
-            row=row,
-            ligand_smiles=ligand_smiles,
-            output_path=f"{args_output}/BOLTZ_prediction",
-            pocket_list=current_pockets,
-            max_dist=max_dist,
-            use_msa=use_msa_boltz,                #Mapped from function argument
-            use_forces=use_forces,
-            no_kernels=no_kernels,
-            path_to_boltz_env=path_to_boltz_env,
-            devices=devices,
-            recycling_steps=recycling_steps,
-            sampling_steps=sampling_steps,
-            diffusion_samples=diffusion_samples,
-            output_format=output_format,
-            sampling_steps_affinity=sampling_steps_affinity
-        )
-        # ---------------------------------------------------------
-        # 2. Run Selected Model (AF3 or CHAI)
-        # ---------------------------------------------------------
-        if model_flag == 'AF3':
-            if MSA_flag:
-                run_AlphaFold3(row, output_path, msa_flag=True, ligand_SMILES=ligand_smiles)
-            else:
-                run_AlphaFold3(row, output_path, msa_flag=False, ligand_SMILES=ligand_smiles)
-        
-        elif model_flag == 'CHAI':
-            if ligand_smiles:
-                if MSA_flag:
-                    run_chai_w_MSA(row, f"{output_path}/{model_flag}_prediction")
-                    run_chai_cofold_w_MSA(row, f"{output_path}/{model_flag}_cofold", ligand_smiles)
-                else:
-                    run_chai(row, f"{output_path}/{model_flag}_prediction")
-                    run_chai_cofold(row, f"{output_path}/{model_flag}_cofold", ligand_smiles)
-            else:
-                # If no ligand is provided, just run the protein prediction
-                if MSA_flag:
-                    run_chai_w_MSA(row, f"{output_path}/{model_flag}_prediction")
-                else:
-                    run_chai(row, f"{output_path}/{model_flag}_prediction")
-        elif model_flag == 'BOLTZ_ONLY':
-            continue
+    # Constructing the dictionary structure
+    if pocket_list:
+        yaml_data = {
+            "version": 1,
+            "sequences": [
+                {
+                    "protein": {
+                        "id": "A",
+                        "sequence": seq 
+                    }
+                },
+                {
+                    "ligand": {
+                        "id": "B",
+                        "smiles": ligand_smiles
+                    }
+                }
+            ],
+            "constraints": [
+                {
+                    "pocket": {
+                        "binder": "A",  # Defining the pocket on the Protein (A)
+                        "contacts": pocket_list,
+                        "max_distance": max_dist,
+                        "force": False
+                    }
+                }
+            ],
+            "properties": [
+                {
+                    "affinity": {
+                        "binder": "B"  # Calculate affinity for the Ligand (B)
+                    }
+                }
+            ]
+        }
+    else:
+        yaml_data = {
+            "version": 1,
+            "sequences": [
+                {
+                    "protein": {
+                        "id": "A",
+                        "sequence": seq,
+                        "msa": "empty"  
+                    }
+                },
+                {
+                    "ligand": {
+                        "id": "B",
+                        "smiles": ligand_smiles
+                    }
+                }
+            ],
+            "properties": [
+                {
+                    "affinity": {
+                        "binder": "B"  # Calculate affinity for the Ligand (B)
+                    }
+                }
+            ]
+        }
 
-    # ---------------------------------------------------------
-    # 3. Post-Processing
-    # ---------------------------------------------------------
+    # Ensure output directory exists
+    os.makedirs(yaml_path, exist_ok=True)
+    file_output = os.path.join(yaml_path, f"{file_id}.yaml")
+
+    with open(file_output, "w") as f:
+        # sort_keys=False preserves the order of the dictionary
+        yaml.dump(yaml_data, f, default_flow_style=False, sort_keys=False)
     
-    # Process Boltz (Always)
-    boltz_df = process_Boltz_folder("/home/eduardo/allostery/2XPU_trial/BOLTZ_prediction", f"{args_output}/BOLTZ_pdbs")
-    process_AF3_folder("/home/eduardo/allostery/2XPU_trial/AF3_predictions", f"{args_output}/AF3_pdbs")
-    process_chai_folder("/home/eduardo/allostery/2XPU_trial/CHAI_predictions", f"{args_output}/CHAI_pdbs")
-    # Process Selected Model
-    if model_flag == "AF3":
-        process_AF3_folder(f"{output_path}/{model_flag}_prediction", f"{output_path}/{model_flag}_pdbs")
-    elif model_flag == "CHAI":
-        process_chai_folder(f"{output_path}/{model_flag}_prediction", f"{output_path}/{model_flag}_pdbs")
-        
-    return boltz_df
-
-### PROTEIN METRICS #########################################################################################################################################
-
+    return file_output
 
 def extract_plddt(file_path):
     """
@@ -1510,6 +907,7 @@ THREE_TO_ONE_MAP = {
     'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
 }
 
+
 def three_to_one(res_names):
     """
     Converts a list or array of 3-letter residue codes to a single 1-letter string.
@@ -1517,6 +915,7 @@ def three_to_one(res_names):
     """
     # Use .get() to return 'X' for any residue not in the dictionary
     return "".join([THREE_TO_ONE_MAP.get(res, 'X') for res in res_names])
+
 
 def get_coords(pdb_path):
     """
@@ -1536,6 +935,7 @@ def get_coords(pdb_path):
     
     return coords_64, seq_str
 
+
 def batch_tm_align(target_path, design_path):
     # 1. Load Target Coords
     target_coords, target_seq = get_coords(target_path)
@@ -1549,8 +949,10 @@ def batch_tm_align(target_path, design_path):
     res = tm_align(mobile_coords, target_coords, mobile_seq, target_seq)
         
     return res.rmsd, res.tm_norm_chain1
+
 def detect_clashes(file_path, clash_distance=2.0, bond_distance=1.2):
     return 0, 0.0
+
 def detect_clashes_2(file_path, clash_distance=2.0, bond_distance=1.2):
     """
     Detects steric clashes using Biotite (Vectorized/Fast).
@@ -1605,11 +1007,6 @@ def detect_clashes_2(file_path, clash_distance=2.0, bond_distance=1.2):
     except Exception as e:
         print(f"Error in clash detection for {file_path}: {e}")
         return 0, 0.0
-
-def compute_SAPscore():
-    return
-
-### BINDING AND POCKET METRICS ###############################################################################################################################
 
 def gnina_box_generator(pdb_file, residues, size=20):
     """
@@ -1726,73 +1123,6 @@ def gnina_minimize_defined_box(pdb_file,
     return
 
 
-def gnina_minimize_autobox(pdb_file,
-                           ligand,
-                           output_folder,
-                           gnina_path,
-                           cnn,
-                           exhaustiveness, 
-                           autobox_add):
-    """
-    This function both creates poses for the ligand for ESM predictions as well as computes the gnina scores
-    for each structure in the pdb_folder. Returns a dataframe with GNina metrics
-    
-    :param pdb_folder: Description
-    :param ligand: Description
-    :param output_folder: Description
-    :param gnina_path: Description
-    :param cnn: Description
-    :param exhaustiveness: Description
-    :param autobox_add: Description
-    """
-    # Create output directory if it doesn't exist
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
-
-    # Prepare gnina command
-    # Note: Added check to ensure pdb_file is a Path object or string
-    pdb_path = Path(pdb_file)
-    output_path = Path(output_folder) / f"{pdb_path.stem}_ligand.pdb"
-
-    gnina_command = (
-        f'{gnina_path} -r {pdb_file} -l {ligand} --autobox_ligand {pdb_file} '
-        f'-o {output_path} --minimize '
-        f'--exhaustiveness {exhaustiveness} --cnn {cnn} --autobox_add {autobox_add}'
-    )
-    
-    # Run the command
-    gnina_result = subprocess.run(gnina_command, shell=True, capture_output=True, text=True)
-    
-    # Optional: Debug prints (can comment out for production)
-    # print(gnina_command)
-    # print(gnina_result.stdout)
-    
-    output = gnina_result.stdout
-
-    # --- Parsing Logic ---
-
-    # 1. Capture CNN Score
-    # Matches: "CNNscore: 0.41463"
-    match_cnn_score = re.search(r"CNNscore:\s*([-\d.]+)", output)
-    CNN_score = float(match_cnn_score.group(1)) if match_cnn_score else None
-
-    # 2. Capture CNN Affinity
-    # Matches: "CNNaffinity: 4.86840"
-    match_cnn_aff = re.search(r"CNNaffinity:\s*([-\d.]+)", output)
-    CNN_affinity = float(match_cnn_aff.group(1)) if match_cnn_aff else None
-
-    # 3. Capture both Affinity Scores
-    # Matches: "Affinity: -6.19290  -0.54008"
-    # This regex looks for: "Affinity:", spaces, Group 1 (number), spaces, Group 2 (number)
-    match_aff = re.search(r"Affinity:\s*([-\d.]+)\s+([-\d.]+)", output)
-    
-    if match_aff:
-        vina_affinity = float(match_aff.group(1))
-        vina_affinity_2 = float(match_aff.group(2))
-    else:
-        vina_affinity = None
-        vina_affinity_2 = None
-
-    return CNN_score, CNN_affinity, vina_affinity, vina_affinity_2
 
 def get_centroid_distance(structure_path, ligand_id, site_residues, center_cutoff):
     """
@@ -1839,6 +1169,7 @@ def get_centroid_distance(structure_path, ligand_id, site_residues, center_cutof
     
     return is_valid, distance
 
+
 def check_cofold_validity(df, path_to_structures, ligand_id, site_residues, center_cutoff=4.0,extension=".pdb"):
     """
     Updates the dataframe with 'distance' and 'is_valid' columns based on ligand placement.
@@ -1872,7 +1203,6 @@ def check_cofold_validity(df, path_to_structures, ligand_id, site_residues, cent
     
     return df
 ### 3D FILTERING #######################################################################################################################################
-
 def sliding_window_1D_filter(seq, window_size, threshold, aa='A'):
     if len(seq) < window_size:
         return seq.count(aa) >= threshold
@@ -1904,6 +1234,7 @@ def filter_dataframe_1D(df, window_size, threshold, seq_col='seq', aa= 'A'):
     df_filtered = df[~mask].copy()
     
     return df_filtered
+
 
 def threed_params_1_df(folder, output_folder,output_name, original_path, gnina_pocket_residues, clash_distance=2.0, bond_distance=1.2,
                        ligand_path=None, gnina_path="gnina", cnn="default",
@@ -1950,6 +1281,7 @@ def threed_params_1_df(folder, output_folder,output_name, original_path, gnina_p
     threed_df.to_csv(f"{output_folder}/{output_name}", index=False)
     return threed_df
 
+
 def global_score(df, weights={"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_atom": -0.2}):
     # Iterate through the weights to normalize each relevant column
     for col, weight in weights.items():
@@ -1967,6 +1299,7 @@ def global_score(df, weights={"pLDDT_mean": 0.4, "TMscore": 0.4, "clashes_per_at
     df['global_score'] = sum(df[f"{col}_norm"] * weight for col, weight in weights.items())
     
     return df
+
 
 def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10,top_n_gnina=10):
 
@@ -1998,6 +1331,7 @@ def threed_filter_1_df(df,output_folder, weights, min_plddt=0.8, min_rmsd=1, max
     sorted_df = sorted_df.sort_values(by="global_score", ascending=False).reset_index(drop=True)
 
     return sorted_df
+
 
 def threed_filter_2_df(df_list, output_folder, output_names, weights, min_plddt=0.8, min_rmsd=1, max_rmsd=8, max_clashes=1.01, top_n_score=10, top_n_gnina=10):
     filtered_dfs = []
@@ -2069,6 +1403,7 @@ def threed_filter_2_df(df_list, output_folder, output_names, weights, min_plddt=
     return final_output_dfs
 
 ### VISUALIZATION #######################################################################################################################################
+
 def count_designs_in_region(df, x_col, y_col, x_range, y_range):
     """
     Counts the number of points (designs) falling within the specified rectangle.
@@ -2079,59 +1414,6 @@ def count_designs_in_region(df, x_col, y_col, x_range, y_range):
     )
     return int(mask.sum())
 
-def plot_scatter_with_region(df, x_col, y_col, x_range, y_range, xlim=None, ylim=None, output_file=None):
-    """
-    Plots a scatter plot, overlays a rectangle, and displays the count of designs within.
-    """
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    
-    fig, ax = plt.subplots(figsize=(8, 6))
-    
-    # 1. Create the scatter plot
-    ax.scatter(df[x_col], df[y_col], alpha=0.6, label='Data Points')
-    
-    # 2. Calculate rectangle parameters
-    width = x_range[1] - x_range[0]
-    height = y_range[1] - y_range[0]
-    
-    # 3. Create the rectangle patch
-    rect = patches.Rectangle(
-        (x_range[0], y_range[0]), 
-        width, height, linewidth=2, 
-        edgecolor='red', facecolor='red', alpha=0.2, label='Target Region'
-    )
-    ax.add_patch(rect)
-    
-    # 4. Count designs and add text box
-    # Make sure count_designs_in_region is imported or available!
-    design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
-    text_str = f'Designs in region: {design_count}'
-    props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
-    
-    ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=11,
-            verticalalignment='top', bbox=props)
-    
-    # 5. Apply Axis Limits
-    if xlim is not None:
-        ax.set_xlim(xlim)
-    if ylim is not None:
-        ax.set_ylim(ylim)
-    
-    # Formatting
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_title(f'Scatter Plot: {x_col} vs {y_col}')
-    ax.legend(loc='upper right')
-    ax.grid(True, linestyle='--', alpha=0.7)
-    
-    # Save or Show 
-    if output_file:
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    else:
-        plt.show()
-        
-    plt.close(fig)
 
 def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, xlim=None, ylim=None, output_file=None):
     """
@@ -2195,61 +1477,6 @@ def plot_four_scatters_with_region(dfs, titles, x_col, y_col, x_range, y_range, 
         
     plt.close(fig)
 
-def plot_multiple_scatters(df_list, titles, x_col, y_col, x_range, y_range, cols=3, xlim=None, ylim=None):
-    """
-    Creates a grid of subplots, highlighting a target region and counting valid designs.
-    """
-    n = len(df_list)
-    rows = math.ceil(n / cols)
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 4), constrained_layout=True)
-    
-    if n > 1:
-        axes_flat = axes.flatten()
-    else:
-        axes_flat = [axes]
-
-    rect_width = x_range[1] - x_range[0]
-    rect_height = y_range[1] - y_range[0]
-
-    for i in range(n):
-        ax = axes_flat[i]
-        df = df_list[i]
-        
-        # Plot data
-        ax.scatter(df[x_col], df[y_col], alpha=0.6, s=15)
-        
-        # Add the range patch
-        rect = patches.Rectangle(
-            (x_range[0], y_range[0]), rect_width, rect_height,
-            linewidth=1.5, edgecolor='red', facecolor='red', alpha=0.15
-        )
-        ax.add_patch(rect)
-        
-        # Count designs and add text box
-        design_count = count_designs_in_region(df, x_col, y_col, x_range, y_range)
-        text_str = f'Valid: {design_count}'
-        props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
-        ax.text(0.05, 0.95, text_str, transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', bbox=props)
-        
-        # Apply Axis Limits
-        if xlim is not None:
-            ax.set_xlim(xlim)
-        if ylim is not None:
-            ax.set_ylim(ylim)
-        
-        # Labels and Titles
-        ax.set_title(titles[i])
-        ax.set_xlabel(x_col)
-        ax.set_ylabel(y_col)
-        ax.grid(True, linestyle=':', alpha=0.6)
-
-    # Hide any unused subplots
-    for j in range(i + 1, len(axes_flat)):
-        axes_flat[j].axis('off')
-
-    plt.show()
 
 def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2, output_file=None):
     """
@@ -2321,17 +1548,6 @@ def plot_comparative_distributions(df_list, columns, df_labels=None, cols=2, out
         
     plt.close(fig)
 ### AUXILIARY FUNCTIONS ###############################################################################################################################
-def move_pdbs_to_folder(input_folder, output_folder):
-    """
-    Moves all PDB files from pdb_folder to output_folder.
-    """
-    # Create output folder if it doesn't exist
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
-    
-    # Move each PDB file
-    for pdb_file in Path(input_folder).glob("*.pdb"):
-        new_path = Path(output_folder) / pdb_file.name
-        pdb_file.rename(new_path)
 
 def process_chai_folder(base_path, output_base_path):
     """
@@ -2396,6 +1612,7 @@ def process_chai_folder(base_path, output_base_path):
                     pass
 
     return
+
 
 def process_AF3_folder(base_path, output_base_path):
     """
@@ -2466,6 +1683,7 @@ def process_AF3_folder(base_path, output_base_path):
         print(f"  Successfully moved {count} files to {dest_dir}")
 
     return
+
 
 
 
@@ -2579,5 +1797,4 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
 
     return df
 
-def second_prediction_joint_df():
-    return
+

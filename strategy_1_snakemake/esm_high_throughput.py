@@ -2,14 +2,19 @@ import torch
 import esm
 import pandas as pd
 import argparse
+import os
 import sys
 from pathlib import Path
 from tqdm import tqdm  
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(f"[gpu-pin] esm_high_throughput visible={os.environ.get('CUDA_VISIBLE_DEVICES', 'ALL')} device={device}")
+
 # Load model
 model = esm.pretrained.esmfold_v1()
-model = model.eval().cuda()
+model = model.eval().to(device)
 
 # Input check
 parser = argparse.ArgumentParser(

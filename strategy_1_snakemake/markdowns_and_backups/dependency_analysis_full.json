@@ -1,0 +1,356 @@
+{
+  "total_functions_in_file": 64,
+  "root_functions_from_pipeline": [
+    "boltz_yaml_generator",
+    "check_cofold_validity",
+    "filter_dataframe_1D",
+    "generate_redesign_string",
+    "plot_comparative_distributions",
+    "plot_four_scatters_with_region",
+    "process_AF3_folder",
+    "process_Boltz_folder",
+    "process_MPNN_folder",
+    "process_chai_folder",
+    "run_AlphaFold3",
+    "run_chai",
+    "run_chai_cofold",
+    "run_chai_cofold_w_MSA",
+    "run_chai_w_MSA",
+    "threed_filter_1_df",
+    "threed_filter_2_df",
+    "threed_params_1_df"
+  ],
+  "functions_directly_called_by_root": {
+    "boltz_yaml_generator": [],
+    "check_cofold_validity": [
+      "get_centroid_distance"
+    ],
+    "filter_dataframe_1D": [
+      "sliding_window_1D_filter"
+    ],
+    "generate_redesign_string": [
+      "load_structure"
+    ],
+    "plot_comparative_distributions": [],
+    "plot_four_scatters_with_region": [
+      "count_designs_in_region"
+    ],
+    "process_AF3_folder": [],
+    "process_Boltz_folder": [],
+    "process_MPNN_folder": [
+      "process_MPNN_file"
+    ],
+    "process_chai_folder": [],
+    "run_AlphaFold3": [
+      "AF_json_generator_cofold",
+      "AF_json_generator_cofold_w_MSA",
+      "AF_json_generator_w_MSA",
+      "AF_json_generator_wo_MSA"
+    ],
+    "run_chai": [],
+    "run_chai_cofold": [],
+    "run_chai_cofold_w_MSA": [],
+    "run_chai_w_MSA": [],
+    "threed_filter_1_df": [
+      "global_score"
+    ],
+    "threed_filter_2_df": [
+      "global_score"
+    ],
+    "threed_params_1_df": [
+      "batch_tm_align",
+      "detect_clashes",
+      "extract_plddt",
+      "extract_sequence",
+      "gnina_minimize_defined_box"
+    ]
+  },
+  "all_reachable_functions": [
+    "AF_json_generator_cofold",
+    "AF_json_generator_cofold_w_MSA",
+    "AF_json_generator_w_MSA",
+    "AF_json_generator_wo_MSA",
+    "batch_tm_align",
+    "boltz_yaml_generator",
+    "check_cofold_validity",
+    "count_designs_in_region",
+    "detect_clashes",
+    "extract_plddt",
+    "extract_sequence",
+    "filter_dataframe_1D",
+    "generate_redesign_string",
+    "get_centroid_distance",
+    "get_coordinate_sequence",
+    "get_coords",
+    "get_seqres_sequence",
+    "global_score",
+    "gnina_box_generator",
+    "gnina_minimize_defined_box",
+    "load_structure",
+    "plot_comparative_distributions",
+    "plot_four_scatters_with_region",
+    "process_AF3_folder",
+    "process_Boltz_folder",
+    "process_MPNN_file",
+    "process_MPNN_folder",
+    "process_chai_folder",
+    "run_AlphaFold3",
+    "run_chai",
+    "run_chai_cofold",
+    "run_chai_cofold_w_MSA",
+    "run_chai_w_MSA",
+    "sliding_window_1D_filter",
+    "three_to_one",
+    "threed_filter_1_df",
+    "threed_filter_2_df",
+    "threed_params_1_df"
+  ],
+  "truly_unused_functions": [
+    "compute_SAPscore",
+    "compute_msa",
+    "define_active_site",
+    "define_aggresive_segments",
+    "define_conservative_segments",
+    "detect_clashes_2",
+    "detect_first_shell",
+    "detect_second_shell",
+    "extract_dssp_string",
+    "extract_pdb_info",
+    "generate_MPNN_jsons",
+    "generate_rf3_yaml",
+    "get_chain_id",
+    "gnina_minimize_autobox",
+    "list_to_contig_map",
+    "move_pdbs_to_folder",
+    "plot_multiple_scatters",
+    "plot_scatter_with_region",
+    "run_Boltz2",
+    "run_ESMfold",
+    "run_ligand_MPNN",
+    "run_rf1",
+    "run_rfAA",
+    "run_rfd3",
+    "second_prediction_joint_df",
+    "second_prediction_round"
+  ],
+  "dependency_tree_full": {
+    "load_structure": [],
+    "extract_pdb_info": [
+      "define_active_site",
+      "extract_dssp_string",
+      "extract_sequence",
+      "get_chain_id"
+    ],
+    "get_chain_id": [],
+    "extract_sequence": [
+      "get_coordinate_sequence",
+      "get_seqres_sequence"
+    ],
+    "get_seqres_sequence": [],
+    "get_coordinate_sequence": [],
+    "extract_dssp_string": [],
+    "define_active_site": [
+      "detect_first_shell",
+      "detect_second_shell"
+    ],
+    "detect_first_shell": [],
+    "detect_second_shell": [],
+    "list_to_contig_map": [
+      "define_aggresive_segments",
+      "define_conservative_segments"
+    ],
+    "define_conservative_segments": [],
+    "define_aggresive_segments": [],
+    "run_rf1": [],
+    "run_rfAA": [],
+    "generate_rf3_yaml": [],
+    "run_rfd3": [
+      "generate_rf3_yaml"
+    ],
+    "generate_redesign_string": [
+      "load_structure"
+    ],
+    "generate_MPNN_jsons": [
+      "generate_redesign_string"
+    ],
+    "run_ligand_MPNN": [],
+    "process_MPNN_folder": [
+      "process_MPNN_file"
+    ],
+    "process_MPNN_file": [],
+    "run_ESMfold": [],
+    "compute_msa": [],
+    "AF_json_generator_wo_MSA": [],
+    "AF_json_generator_w_MSA": [],
+    "AF_json_generator_cofold": [],
+    "AF_json_generator_cofold_w_MSA": [],
+    "run_AlphaFold3": [
+      "AF_json_generator_cofold",
+      "AF_json_generator_cofold_w_MSA",
+      "AF_json_generator_w_MSA",
+      "AF_json_generator_wo_MSA"
+    ],
+    "run_chai": [],
+    "run_chai_w_MSA": [],
+    "run_chai_cofold": [],
+    "run_chai_cofold_w_MSA": [],
+    "boltz_yaml_generator": [],
+    "run_Boltz2": [
+      "boltz_yaml_generator"
+    ],
+    "second_prediction_round": [
+      "process_AF3_folder",
+      "process_Boltz_folder",
+      "process_chai_folder",
+      "run_AlphaFold3",
+      "run_Boltz2",
+      "run_chai",
+      "run_chai_cofold",
+      "run_chai_cofold_w_MSA",
+      "run_chai_w_MSA"
+    ],
+    "extract_plddt": [
+      "load_structure"
+    ],
+    "three_to_one": [],
+    "get_coords": [
+      "three_to_one"
+    ],
+    "batch_tm_align": [
+      "get_coords"
+    ],
+    "detect_clashes": [],
+    "detect_clashes_2": [],
+    "compute_SAPscore": [],
+    "gnina_box_generator": [],
+    "gnina_minimize_defined_box": [
+      "gnina_box_generator"
+    ],
+    "gnina_minimize_autobox": [],
+    "get_centroid_distance": [],
+    "check_cofold_validity": [
+      "get_centroid_distance"
+    ],
+    "sliding_window_1D_filter": [],
+    "filter_dataframe_1D": [
+      "sliding_window_1D_filter"
+    ],
+    "threed_params_1_df": [
+      "batch_tm_align",
+      "detect_clashes",
+      "extract_plddt",
+      "extract_sequence",
+      "gnina_minimize_defined_box"
+    ],
+    "global_score": [],
+    "threed_filter_1_df": [
+      "global_score"
+    ],
+    "threed_filter_2_df": [
+      "global_score"
+    ],
+    "count_designs_in_region": [],
+    "plot_scatter_with_region": [
+      "count_designs_in_region"
+    ],
+    "plot_four_scatters_with_region": [
+      "count_designs_in_region"
+    ],
+    "plot_multiple_scatters": [
+      "count_designs_in_region"
+    ],
+    "plot_comparative_distributions": [],
+    "move_pdbs_to_folder": [],
+    "process_chai_folder": [],
+    "process_AF3_folder": [],
+    "process_Boltz_folder": [],
+    "second_prediction_joint_df": []
+  },
+  "count_used": 38,
+  "count_unused": 26,
+  "reachable_by_root": {
+    "boltz_yaml_generator": [
+      "boltz_yaml_generator"
+    ],
+    "check_cofold_validity": [
+      "check_cofold_validity",
+      "get_centroid_distance"
+    ],
+    "filter_dataframe_1D": [
+      "filter_dataframe_1D",
+      "sliding_window_1D_filter"
+    ],
+    "generate_redesign_string": [
+      "generate_redesign_string",
+      "load_structure"
+    ],
+    "plot_comparative_distributions": [
+      "plot_comparative_distributions"
+    ],
+    "plot_four_scatters_with_region": [
+      "count_designs_in_region",
+      "plot_four_scatters_with_region"
+    ],
+    "process_AF3_folder": [
+      "process_AF3_folder"
+    ],
+    "process_Boltz_folder": [
+      "process_Boltz_folder"
+    ],
+    "process_MPNN_folder": [
+      "process_MPNN_file",
+      "process_MPNN_folder"
+    ],
+    "process_chai_folder": [
+      "process_chai_folder"
+    ],
+    "run_AlphaFold3": [
+      "AF_json_generator_cofold",
+      "AF_json_generator_cofold_w_MSA",
+      "AF_json_generator_w_MSA",
+      "AF_json_generator_wo_MSA",
+      "run_AlphaFold3"
+    ],
+    "run_chai": [
+      "run_chai"
+    ],
+    "run_chai_cofold": [
+      "run_chai_cofold"
+    ],
+    "run_chai_cofold_w_MSA": [
+      "run_chai_cofold_w_MSA"
+    ],
+    "run_chai_w_MSA": [
+      "run_chai_w_MSA"
+    ],
+    "threed_filter_1_df": [
+      "global_score",
+      "threed_filter_1_df"
+    ],
+    "threed_filter_2_df": [
+      "global_score",
+      "threed_filter_2_df"
+    ],
+    "threed_params_1_df": [
+      "batch_tm_align",
+      "detect_clashes",
+      "extract_plddt",
+      "extract_sequence",
+      "get_coordinate_sequence",
+      "get_coords",
+      "get_seqres_sequence",
+      "gnina_box_generator",
+      "gnina_minimize_defined_box",
+      "load_structure",
+      "three_to_one",
+      "threed_params_1_df"
+    ]
+  },
+  "recommendations": [
+    "Keep 38 used functions (all reachable from pipeline root functions)",
+    "Remove or archive 26 unused functions: compute_SAPscore, compute_msa, define_active_site, define_aggresive_segments, define_conservative_segments...",
+    "Monitor the layer of helper functions that support core features",
+    "Consider consolidating visualization functions for maintainability",
+    "Ensure test coverage for leaf utility functions like extract_plddt, batch_tm_align"
+  ]
+}

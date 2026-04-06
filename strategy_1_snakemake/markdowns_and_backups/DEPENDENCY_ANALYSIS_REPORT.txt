@@ -1,0 +1,351 @@
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║         COMPLETE RECURSIVE DEPENDENCY ANALYSIS - BSD FUNCTION LIBRARY         ║
+║                        functions_snakemake_bsd_full.py                        ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════════
+EXECUTIVE SUMMARY
+═══════════════════════════════════════════════════════════════════════════════════
+
+Total Functions in File:           64
+Root Functions (from pipeline):    18 
+Reachable Functions (used):        38 (59%)
+Unused Functions:                  26 (41%)
+
+Pipeline Source: bsd_def.smk (18 root entry points calling func.* directly)
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+1. ROOT FUNCTIONS CALLED DIRECTLY BY PIPELINE (18)
+═══════════════════════════════════════════════════════════════════════════════════
+
+These are the 18 functions explicitly invoked via func.function_name() in bsd_def.smk:
+
+┌─ Data & Preprocessing (5 functions) ──────────────────────────────────────────┐
+│  1. generate_redesign_string() → identifies modified residues between WT & novo
+│  2. filter_dataframe_1D()      → filters sequences by repeat patterns
+│  3. process_MPNN_folder()      → aggregates MPNN design outputs into dataframe
+│  4. process_Boltz_folder()     → extracts Boltz metrics & organizes PDB outputs
+│  5. check_cofold_validity()    → validates ligand placement in cofold structures
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ 3D Structure Metrics (3 functions) ────────────────────────────────────────────┐
+│  6. threed_params_1_df()       → calculates pLDDT, RMSD, TM-score, GNINA metrics
+│  7. threed_filter_1_df()       → applies first-pass 3D quality filters
+│  8. threed_filter_2_df()       → multi-model joint filtering for final selection
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Structure Prediction (5 functions) ───────────────────────────────────────────┐
+│  9. run_chai()                 → CHAI protein folding (no MSA)
+│  10. run_chai_w_MSA()          → CHAI with multiple sequence alignment
+│  11. run_chai_cofold()         → CHAI protein-ligand complex prediction
+│  12. run_chai_cofold_w_MSA()   → CHAI cofold with MSA
+│  13. run_AlphaFold3()          → AlphaFold3 structure prediction (protein ±ligand)
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Output Processing & Curation (3 functions) ──────────────────────────────────┐
+│  14. process_AF3_folder()      → extracts AlphaFold3 .cif outputs from nested dirs
+│  15. process_chai_folder()     → extracts CHAI .cif outputs from nested structure
+│  16. process_Boltz_folder()    → extracts Boltz metrics & consolidates outputs
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Configuration & Visualization (3 functions) ─────────────────────────────────┐
+│  17. boltz_yaml_generator()    → generates Boltz parameter configuration files
+│  18. plot_four_scatters_with_region()  → multi-model 2x2 scatter plot with regions
+│  19. plot_comparative_distributions()  → KDE distribution comparison across models
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+2. DEPENDENCY LAYERS (Recursive Chains)
+═══════════════════════════════════════════════════════════════════════════════════
+
+Layer 1 - ROOT FUNCTIONS (18 entry points):
+  boltz_yaml_generator, check_cofold_validity, filter_dataframe_1D, 
+  generate_redesign_string, plot_comparative_distributions, 
+  plot_four_scatters_with_region, process_AF3_folder, process_Boltz_folder,
+  process_MPNN_folder, process_chai_folder, run_AlphaFold3, run_chai,
+  run_chai_cofold, run_chai_cofold_w_MSA, run_chai_w_MSA,
+  threed_filter_1_df, threed_filter_2_df, threed_params_1_df
+
+Layer 2 - PRIMARY HELPERS (called by 1+ root functions):
+  global_score, process_MPNN_file, sliding_window_1D_filter,
+  get_centroid_distance, count_designs_in_region
+
+Layer 3 - SECONDARY HELPERS (called by Layer 2+ functions):
+  AF_json_generator_cofold, AF_json_generator_cofold_w_MSA,
+  AF_json_generator_w_MSA, AF_json_generator_wo_MSA,
+  batch_tm_align, detect_clashes, extract_plddt, extract_sequence,
+  load_structure, gnina_box_generator, gnina_minimize_defined_box
+
+Layer 4 - LEAF UTILITIES (lowest-level, no internal calls):
+  extract_plddt, get_coordinates, get_seqres_sequence, get_coordinate_sequence,
+  three_to_one, detect_clashes, get_coords, get_centroid_distance,
+  sliding_window_1D_filter, global_score, count_designs_in_region,
+  and 4 JSON generator functions (all leaf functions with no dependencies)
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+3. COMPLETE REACHABLE FUNCTION LIST (38 used functions)
+═══════════════════════════════════════════════════════════════════════════════════
+
+✓ AF_json_generator_cofold         ✓ global_score
+✓ AF_json_generator_cofold_w_MSA   ✓ gnina_box_generator
+✓ AF_json_generator_w_MSA          ✓ gnina_minimize_defined_box
+✓ AF_json_generator_wo_MSA         ✓ load_structure
+✓ batch_tm_align                   ✓ plot_comparative_distributions
+✓ boltz_yaml_generator             ✓ plot_four_scatters_with_region
+✓ check_cofold_validity            ✓ process_AF3_folder
+✓ count_designs_in_region          ✓ process_Boltz_folder
+✓ detect_clashes                   ✓ process_MPNN_file
+✓ extract_plddt                    ✓ process_MPNN_folder
+✓ extract_sequence                 ✓ process_chai_folder
+✓ filter_dataframe_1D              ✓ run_AlphaFold3
+✓ generate_redesign_string         ✓ run_chai
+✓ get_centroid_distance            ✓ run_chai_cofold
+✓ get_coordinate_sequence          ✓ run_chai_cofold_w_MSA
+✓ get_coords                        ✓ run_chai_w_MSA
+✓ get_seqres_sequence              ✓ sliding_window_1D_filter
+✓ threed_filter_1_df               ✓ three_to_one
+✓ threed_filter_2_df               
+✓ threed_params_1_df               
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+4. UNUSED FUNCTIONS (26 - NOT REACHABLE FROM ANY ROOT)
+═══════════════════════════════════════════════════════════════════════════════════
+
+LEGACY RF DIFFUSION FUNCTIONS (8) - Old workflow, not used in current pipeline:
+  ✗ run_rf1                        (RF Diffusion v1 - deprecated)
+  ✗ run_rfAA                       (RF Diffusion all-atom - deprecated)
+  ✗ generate_rf3_yaml              (RF Diffusion v3 config - not called)
+  ✗ run_rfd3                       (RF Diffusion v3 execution - not called)
+  ✗ run_ESMfold                    (ESM Fold folding - replaced by scatter)
+  ✗ run_ligand_MPNN                (Old MPNN runner - replaced by hybrid scatter)
+  ✗ generate_MPNN_jsons            (MPNN prep - now done inline)
+  ✗ list_to_contig_map             (Contig generation - no longer needed)
+
+  └─ Related helper functions that support deprecated features:
+     ✗ define_conservative_segments
+     ✗ define_aggresive_segments
+     ✗ extract_dssp_string
+     ✗ extract_pdb_info
+     ✗ get_chain_id
+     ✗ detect_first_shell
+     ✗ detect_second_shell
+     ✗ define_active_site
+
+ALTERNATIVE/DUPLICATE VISUALIZATION FUNCTIONS (2):
+  ✗ plot_scatter_with_region       (Superceded by plot_four_scatters_with_region)
+  ✗ plot_multiple_scatters         (Superceded by plot_comparative_distributions)
+
+UNUSED/STUB FUNCTIONS (8):
+  ✗ compute_msa                    (Stub function - no implementation)
+  ✗ compute_SAPscore               (Stub function - no implementation)
+  ✗ second_prediction_joint_df     (Stub function - no implementation)
+  ✗ second_prediction_round        (Large wrapper - functionality distributed 
+                                    to individual rules in current pipeline)
+  ✗ detect_clashes_2               (Alternative implementation - v1 kept instead)
+  ✗ roll_Boltz2                    (Old name/version - never called)
+  ✗ gnina_minimize_autobox         (Alternative GNINA mode - box defined instead)
+  ✗ move_pdbs_to_folder            (Not needed in Snakemake pipeline)
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+5. DEPENDENCY CHAIN EXAMPLES (Tracing from root to leaf)
+═══════════════════════════════════════════════════════════════════════════════════
+
+CHAIN 1: Structure Metrics → 3D Filters
+──────────────────────────────────────
+threed_params_1_df (ROOT)
+├── extract_plddt
+│   └── load_structure (leaf)
+├── extract_sequence
+│   ├── get_seqres_sequence (leaf)
+│   └── get_coordinate_sequence (leaf)
+├── batch_tm_align
+│   └── get_coords
+│       └── three_to_one (leaf)
+├── detect_clashes (leaf)
+└── gnina_minimize_defined_box
+    └── gnina_box_generator (leaf)
+
+threed_filter_1_df (ROOT)
+└── global_score (leaf)
+
+threed_filter_2_df (ROOT)
+└── global_score (leaf)
+
+
+CHAIN 2: AF3 Structure Prediction
+──────────────────────────────────
+run_AlphaFold3 (ROOT)
+├── AF_json_generator_wo_MSA (leaf)
+├── AF_json_generator_w_MSA (leaf)
+├── AF_json_generator_cofold (leaf)
+└── AF_json_generator_cofold_w_MSA (leaf)
+
+
+CHAIN 3: Data Filtering → 1D QC
+────────────────────────────────
+filter_dataframe_1D (ROOT)
+└── sliding_window_1D_filter (leaf)
+
+process_MPNN_folder (ROOT)
+└── process_MPNN_file (leaf)
+
+
+CHAIN 4: Cofold Validation
+───────────────────────────
+check_cofold_validity (ROOT)
+└── get_centroid_distance (leaf)
+
+process_Boltz_folder (ROOT)
+│  [no internal calls - reads JSON directly]
+└── (leaf)
+
+
+CHAIN 5: Visualization
+──────────────────────
+plot_four_scatters_with_region (ROOT)
+└── count_designs_in_region (leaf)
+
+plot_comparative_distributions (ROOT)
+   [no internal calls - uses pandas/seaborn directly]
+   └── (leaf)
+
+
+CHAIN 6: Configuration
+──────────────────────
+boltz_yaml_generator (ROOT)
+   [no internal calls - generates YAML directly]
+   └── (leaf)
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+6. FUNCTION CLASSIFICATION BY PURPOSE
+═══════════════════════════════════════════════════════════════════════════════════
+
+A. CRITICAL PATH (Must keep - core pipeline operations):
+   ┌─ Structure Prediction ────────────────────────────────────────────────┐
+   │  run_chai, run_chai_w_MSA, run_chai_cofold, run_chai_cofold_w_MSA,  │
+   │  run_AlphaFold3, boltz_yaml_generator                               │
+   └────────────────────────────────────────────────────────────────────────┘
+   
+   ┌─ Sequence Design & Preparation ────────────────────────────────────────┐
+   │  generate_redesign_string, filter_dataframe_1D, process_MPNN_folder  │
+   └────────────────────────────────────────────────────────────────────────┘
+   
+   ┌─ 3D Analysis & Filtering ──────────────────────────────────────────────┐
+   │  threed_params_1_df, threed_filter_1_df, threed_filter_2_df,        │
+   │  check_cofold_validity                                               │
+   └────────────────────────────────────────────────────────────────────────┘
+
+B. SUPPORT LAYER (Enable critical path):
+   ┌─ Structure Metrics ────────────────────────────────────────────────────┐
+   │  extract_plddt, batch_tm_align, detect_clashes, extract_sequence    │
+   │  → Compute the actual 3D quality metrics that threed_params_1_df uses
+   └────────────────────────────────────────────────────────────────────────┘
+   
+   ┌─ Binding Analysis ─────────────────────────────────────────────────────┐
+   │  gnina_minimize_defined_box, gnina_box_generator, get_centroid_distance
+   │  → Compute binding cavity metrics for cofold validation                │
+   └────────────────────────────────────────────────────────────────────────┘
+   
+   ┌─ Output Organization ──────────────────────────────────────────────────┐
+   │  process_AF3_folder, process_chai_folder, process_Boltz_folder,     │
+   │  process_MPNN_file                                                   │
+   │  → Consolidate nested prediction outputs into flat directories        │
+   └────────────────────────────────────────────────────────────────────────┘
+
+C. ANALYTICAL LAYER (Post-processing & visualization):
+   ┌─ Metrics & Filtering ──────────────────────────────────────────────────┐
+   │  global_score                     → Normalize & weight metrics         │
+   │  sliding_window_1D_filter         → Detect sequence anomalies        │
+   │  count_designs_in_region          → Histogram region counting        │
+   │  get_centroid_distance            → Geometric binding validation     │
+   └────────────────────────────────────────────────────────────────────────┘
+   
+   ┌─ Visualization & Reporting ────────────────────────────────────────────┐
+   │  plot_four_scatters_with_region   → Multi-model 2x2 quality plot     │
+   │  plot_comparative_distributions   → KDE comparison across models     │
+   └────────────────────────────────────────────────────────────────────────┘
+
+D. UTILITY LAYER (Low-level helpers):
+   ┌─ File Parsing & Conversion ────────────────────────────────────────────┐
+   │  load_structure                   → PDB/CIF parser wrapper            │
+   │  get_coords, three_to_one         → Coordinate extraction & conversion
+   │  extract_sequence, get_seqres_sequence, get_coordinate_sequence      │
+   │  AF_json_generator_* (4 variants) → JSON config generation           │
+   └────────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+7. MAINTENANCE & OPTIMIZATION RECOMMENDATIONS
+═══════════════════════════════════════════════════════════════════════════════════
+
+IMMEDIATE ACTIONS:
+  1. ✓ Archive or remove 26 unused functions to reduce code bloat (41% of file)
+  2. ✓ Consolidate 4 AF_json_generator variants into single parameterized function
+  3. ✓ Consider moving stubs (compute_msa, compute_SAPscore) to separate module
+  4. ✓ Document the 38 kept functions with explicit "ACTIVE - DO NOT REMOVE" comments
+
+CONSOLIDATION OPPORTUNITIES:
+  - Merge plot_scatter_with_region into plot_four_scatters_with_region logic
+  - Merge plot_multiple_scatters into plot_comparative_distributions
+  - Combine gnina_minimize_defined_box + gnina_minimize_autobox into single function
+  - Consider detect_clashes vs detect_clashes_2: only one is used, evaluate which
+
+TEST COVERAGE PRIORITIES (in order of criticality):
+  1. threed_params_1_df        (calculates 5 key metrics, called in 2+ key rules)
+  2. threed_filter_1_df/2_df   (performs final design selection - high impact)
+  3. generate_redesign_string  (identifies mutation regions - used early)
+  4. batch_tm_align            (TM-score is key filtering metric)
+  5. extract_plddt             (pLDDT is primary quality metric)
+
+DOCUMENTATION GAPS:
+  - No docstrings in 68% of functions  
+  - No parameter type hints in active functions
+  - Consider adding function-level comments for pipeline traceability
+  - Map rule → function call relationships in inline comments
+
+PERFORMANCE NOTES:
+  - threed_params_1_df is called once per design (high-volume path)
+  - process_*_folder functions use glob/rglob recursively (monitor for slow I/O)
+  - GNINA scoring (gnina_minimize_defined_box) is a bottleneck - consider caching
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+8. FINAL STATISTICS
+═══════════════════════════════════════════════════════════════════════════════════
+
+Function Utilization:
+  Root Functions (entry points):        18 (28% of total)
+  Helper Functions (1-2 levels deep):   15 (23% of total)
+  Utility/Leaf Functions:               5 (8% of total)
+  ──────────────────────────────────────────────────────
+  TOTAL REACHABLE:                      38 (59% of total)
+  TOTAL UNREACHABLE:                    26 (41% of total)
+
+Code Reuse (most important helpers used by multiple roots):
+  global_score              → used by 2 root functions (threed_filter_1_df, threed_filter_2_df)
+  process_MPNN_file         → used by process_MPNN_folder
+  sliding_window_1D_filter  → used by filter_dataframe_1D
+  count_designs_in_region   → used by 1 root + 2 unused functions
+
+Longest Dependency Chain:
+  threed_params_1_df
+  ├── batch_tm_align
+  │   └── get_coords
+  │       └── three_to_one (4 levels deep)
+  ├── extract_plddt
+  │   └── load_structure (3 levels deep)
+  └── gnina_minimize_defined_box
+      └── gnina_box_generator (3 levels deep)
+
+  MAX DEPTH: 4 levels (manageable; no circular dependencies found)
+
+═══════════════════════════════════════════════════════════════════════════════════
+END OF REPORT
+═══════════════════════════════════════════════════════════════════════════════════
