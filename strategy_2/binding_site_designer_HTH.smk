@@ -149,6 +149,34 @@ site_residues_check_cofold = [('A', res) for res in [60, 64, 67, 82, 86, 100, 10
 top_n_score_final = config.get('top_n_score_final', 5)
 top_n_gnina_final = config.get('top_n_gnina_final', 2)
 
+### PDB Cleaning params
+# - cleaning_env: Path to the environment needed for PDB cleaning
+# - clean_and_repair_script: Path to the PDB cleaning and repair script
+# - remove_waters: If true, remove water molecules from the PDB
+# - repair_backbone: If true, repair backbone issues in the PDB
+# - remove_heteroatoms: If true, remove all heteroatoms from the PDB
+# - keep_heteroatoms: Specific heteroatoms to keep (e.g., "LIG")
+# - monomer_chain_w_ligand: Chain ID to keep for monomer with ligand
+# - monomer_chain_wo_ligand: Chain ID to keep for monomer without ligand
+# - dimer_chains_w_ligand: Chain IDs to keep for dimer with ligand
+# - dimer_chains_wo_ligand: Chain IDs to keep for dimer without ligand
+cleaning_env = config.get('cleaning_env')
+clean_and_repair_script = config.get('clean_and_repair_script')
+remove_waters = config.get('remove_waters', True)
+repair_backbone = config.get('repair_backbone', False)
+remove_heteroatoms = config.get('remove_heteroatoms', False)
+keep_heteroatoms = config.get('keep_heteroatoms', None)
+monomer_chain_w_ligand = config.get('monomer_chain_w_ligand', 'A')
+monomer_chain_wo_ligand = config.get('monomer_chain_wo_ligand', 'A')
+dimer_chains_w_ligand = config.get('dimer_chains_w_ligand', 'A,B')
+dimer_chains_wo_ligand = config.get('dimer_chains_wo_ligand', 'A,B')
+
+### Steered MD MPNN params
+# - steeredMD_MPNN_num_designs: Number of designs to generate with MPNN for steered MD
+# - steeredMD_n_batches: Number of batches to split the steered MD MPNN designs into
+steeredMD_MPNN_num_designs = config.get('steeredMD_MPNN_num_designs', 5)
+steeredMD_n_batches = config.get('steeredMD_n_batches', 1)
+
 GPU_LOCK_DIR = os.path.join(OUTPUT_DIR, ".gpu_leases")
 
 
@@ -224,15 +252,413 @@ rule all:
         f"{OUTPUT_DIR}/reports/validity_summary.txt"
 
 # -----------------------------------------------------------------------------
-# 2. PHASE 1: SCATTER LigandMPNN (Parallel on GPUs)
+# 2. PHASE 1: CLEAN PDB AND INFORMATION GATHERING
 # -----------------------------------------------------------------------------
-#Here a LigandMPNN rule will take each pdb, run the MPNN, and output a fasta file for each pdb. This is a scatter step that can be fully parallelized on GPUs.
-# Then in the processing rule, the MPNN outputs will be read, processed into a dataframe, and filtered by MPNN score and by the 1D filter. The resulting dataframe will be saved as a csv for the next step.
+# Before running Ligand MPNN, we need to clean up the RF diffusion outputs and gather the necessary information for MPNN design. 
+# This includes repairing any issues in the PDB files, obtaining monomer and dimer references, and determining which residues should be redesigned based on structural matching.
+# This phase ensures that the input to Ligand MPNN is of high quality and that the redesign focuses on the most relevant residues.
 
-# I think the best way to parallelise is a hybrid strategy
-# --- A. Split the JSONs ---
-# This rule takes the JSONs from RFdiffusion and divides them equally 
-# into N separate chunks (where N = MPNN_GPUS).
+rule clean_pdb:
+    input:
+        reference_path = structure_path
+    output:
+        monomer_ref_w_ligand = f"{OUTPUT_DIR}/monomer_ref_w_ligand.pdb",
+        monomer_ref_wo_ligand = f"{OUTPUT_DIR}/monomer_ref_wo_ligand.pdb",
+        dimer_ref_w_ligand = f"{OUTPUT_DIR}/dimer_ref_w_ligand.pdb",
+        dimer_ref_wo_ligand = f"{OUTPUT_DIR}/dimer_ref_wo_ligand.pdb",
+    run:
+        # Perform cleaning - build 4 separate commands for each output variant
+        base_cmd_parts = [
+            f"conda run -p {cleaning_env} python {clean_and_repair_script}",
+            f"--input {input.reference_path}"
+        ]
+        
+        # Add optional flags that apply to all commands
+        optional_flags = []
+        if remove_waters:
+            optional_flags.append("--remove_waters")
+        if repair_backbone:
+            optional_flags.append("--repair_backbone")
+        if remove_heteroatoms:
+            optional_flags.append("--remove_heteroatoms")
+        if keep_heteroatoms:
+            optional_flags.append(f"--keep_heteroatoms {keep_heteroatoms}")
+        
+        # Build commands for each variant
+        cmd_configs = [
+            (monomer_chain_w_ligand, output.monomer_ref_w_ligand),
+            (monomer_chain_wo_ligand, output.monomer_ref_wo_ligand),
+            (dimer_chains_w_ligand, output.dimer_ref_w_ligand),
+            (dimer_chains_wo_ligand, output.dimer_ref_wo_ligand),
+        ]
+        
+        for chains, output_file in cmd_configs:
+            cmd = base_cmd_parts + optional_flags + [
+                f"--keep_chains {chains}",
+                f"--output {output_file}"
+            ]
+            shell(' '.join(cmd))
+        
+rule gather_redesigned_residues:
+    input:
+        reference_pdb = rules.clean_pdb.output.monomer_ref_wo_ligand,
+        rf_pdbs = RF_PDB_DIR
+    output:
+        redesigned_structures = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_structures.json",
+        redesigned_residues = f"{OUTPUT_DIR}/MPNN_jsons/redesigned_residues.json"
+    run:
+        # Iterate through all RF designs and create the combined JSONs needed for MPNN
+        # Accept both PDB and CIF formats
+        pdb_files = list(Path(input.rf_pdbs).glob("*.pdb")) + list(Path(input.rf_pdbs).glob("*.cif"))
+
+        data_dict = {}
+        redesigned_residues_dict = {}
+
+        for pdb_file in pdb_files:
+            data_dict[str(pdb_file)] = ""
+            redesigned_residues_dict[str(pdb_file)] = func.generate_redesign_string(
+                deNovo_path=pdb_file, 
+                reference_path=input.reference_pdb, 
+                region=[0,54], 
+                chain_id='A',
+                search_radius=redesign_search_radius,
+                rmsd_threshold=redesign_rmsd_threshold
+            )
+        
+        # Generate json files
+        json.dump(data_dict, open(output.redesigned_structures, "w"))
+        json.dump(redesigned_residues_dict, open(output.redesigned_residues, "w"))
+
+        #Update this in the future if you wanna add biases in aa files
+
+rule split_mpnn_jsons:
+    input:
+        redesigned_structures_json = rules.gather_redesigned_residues.output.redesigned_structures, 
+        redesigned_residues_json = rules.gather_redesigned_residues.output.redesigned_residues
+    output:
+        paths_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json", split_id=SPLIT_IDS),
+        res_splits = expand(f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json", split_id=SPLIT_IDS)
+    run:
+        
+        with open(input.redesigned_structures_json, 'r') as f: paths = json.load(f)
+        with open(input.redesigned_residues_json, 'r') as f: res = json.load(f)
+            
+        keys = list(paths.keys())
+        n_splits = len(output.paths_splits)
+        chunk_size = math.ceil(len(keys) / n_splits) if keys else 1
+        
+        for i in range(n_splits):
+            start_idx = i * chunk_size
+            end_idx = start_idx + chunk_size
+            chunk_keys = keys[start_idx:end_idx]
+            
+            chunk_paths = {k: paths[k] for k in chunk_keys}
+            chunk_res = {k: res.get(k, "") for k in chunk_keys}
+            
+            os.makedirs(os.path.dirname(output.paths_splits[i]), exist_ok=True)
+            with open(output.paths_splits[i], 'w') as f: json.dump(chunk_paths, f)
+            with open(output.res_splits[i], 'w') as f: json.dump(chunk_res, f)
+
+# -----------------------------------------------------------------------------
+# 3. PHASE 2: STEERED MD (sampling representative open and closed states)
+# -----------------------------------------------------------------------------
+# In this phase we run the steered MD script on a monomer coming from each of the RF designs, to sample representative open and closed states. 
+# This will give us the inputs for the next phase of Multistate MPNN design, as well as the references for the multistate filtering and template guiding.
+
+
+rule MPNN_steered_MD:
+    input:
+        paths_json = f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/pdb_paths_multi.json",
+        res_json = f"{OUTPUT_DIR}/MPNN_jsons/split_{{split_id}}/redesigned_residues_multi.json"
+    output:
+        seqs_dir = directory(f"{OUTPUT_DIR}/steered_MD/mpnn_outputs/seqs"),
+        done_flag = f"{OUTPUT_DIR}/steered_MD/mpnn_outputs/.mpnn_done"
+    params:
+        out_folder = f"{OUTPUT_DIR}/steered_MD/mpnn_outputs"
+    resources:
+        gpu=1
+    run:
+        # Since the backbones come from RF diffusion, I need a sequence for them so that the simulation is somewhat realistic
+        # I will do an MPNN screening and select the sequence with the best score and thread it in the following rule, before running the steered MD. 
+        # This is a bit hacky but it will allow us to run the MD without having to rewrite the script to be sequence agnostic.
+        # I need a sequence that can hold the backbone in place during the simulation, but it doesn't need to be the best possible sequence, since we will be redesigning it later again.
+        gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+
+        try:
+            print(f"[gpu-pin] rule=run_ligand_mpnn_hybrid split={wildcards.split_id} gpu={gpu_token} host={os.uname().nodename}")
+            # Using your global Python variables perfectly here
+            cmd_parts = [
+                f"conda run -p {path_to_ligand_MPNN_env} python {path_to_ligand_MPNN_script}",
+                f"--pdb_path_multi {input.paths_json}",
+                f"--out_folder {params.out_folder}",
+                f"--save_stats 1",
+                f"--batch_size {steeredMD_MPNN_num_designs}",
+                f"--number_of_batches {steeredMD_n_batches}",
+                f"--model_type ProteinMPNN",
+                f"--checkpoint_protein_mpnn {path_to_mpnn_model}",
+                f"--temperature {mpnn_temperature}",
+                f"--ligand_mpnn_use_side_chain_context {side_chain_context}",
+                f"--redesigned_residues_multi \"{input.res_json}\""
+            ]
+
+            if omit_aa_global:
+                cmd_parts.append(f"--omit_AA {omit_aa_global}")
+            if bias_aa_global:
+                cmd_parts.append(f"--bias_AA {bias_aa_global}")
+
+            shell(f"export CUDA_VISIBLE_DEVICES='{gpu_token}'; {' '.join(cmd_parts)}")
+        finally:
+            release_pipeline_gpu(gpu_lock_fd)
+        
+        # Create completion marker file
+        os.makedirs(os.path.dirname(output.done_flag), exist_ok=True)
+        with open(output.done_flag, "w") as f:
+            f.write("done")
+
+rule process_steered_MD_MPNN:
+    input:
+        done_flags = expand(f"{OUTPUT_DIR}/steered_MD/mpnn_outputs/split_{{split_id}}/.mpnn_done", split_id=SPLIT_IDS),
+        seqs_dirs = expand(f"{OUTPUT_DIR}/steered_MD/mpnn_outputs/seqs", split_id=SPLIT_IDS),
+        paths_json = f"{OUTPUT_DIR}/MPNN_jsons/split_0/pdb_paths_multi.json"
+    output:
+        best_sequences_csv = f"{OUTPUT_DIR}/steered_MD/best_MPNN_sequences.csv"
+    run:
+        import json
+        
+        # 1. Load the original PDB paths mapping
+        with open(input.paths_json, 'r') as f:
+            all_pdb_paths = json.load(f)
+        
+        # 2. Gather all MPNN sequences across splits
+        all_dfs = []
+        for seq_dir in input.seqs_dirs:
+            if os.path.exists(seq_dir) and any(os.scandir(seq_dir)):
+                df = func.process_MPNN_folder(folder=seq_dir, top_n=1)  # top_n=1 to get best
+                all_dfs.append(df)
+        
+        if not all_dfs:
+            # If no sequences generated, create empty output with correct columns
+            output_df = pd.DataFrame(columns=['rf_structure', 'best_sequence', 'score'])
+            output_df.to_csv(output.best_sequences_csv, index=False)
+        else:
+            # Concatenate all results
+            mpnn_df = pd.concat(all_dfs, ignore_index=True)
+            
+            # 3. Map each PDB path to its best sequence
+            results = []
+            for pdb_path in all_pdb_paths.keys():
+                # Find matching sequences for this PDB
+                if 'pdb_path' in mpnn_df.columns or 'file_ID' in mpnn_df.columns:
+                    # Use file_ID or pdb_path column to match
+                    col = 'file_ID' if 'file_ID' in mpnn_df.columns else 'pdb_path'
+                    matching = mpnn_df[mpnn_df[col].str.contains(os.path.basename(pdb_path), case=False, na=False)]
+                    
+                    if not matching.empty:
+                        # Get the top-ranked sequence
+                        best_row = matching.iloc[0]
+                        seq_col = 'seq' if 'seq' in best_row.index else 'sequence'
+                        score_col = 'score' if 'score' in best_row.index else 'global_score'
+                        
+                        results.append({
+                            'rf_structure': pdb_path,
+                            'best_sequence': best_row[seq_col],
+                            'score': best_row.get(score_col, 0.0)
+                        })
+            
+            # 4. Create output DataFrame and save
+            if results:
+                output_df = pd.DataFrame(results)
+                # Rename columns to match seq_threading.py expectations
+                output_df = output_df.rename(columns={
+                    'rf_structure': 'backbone_path',
+                    'best_sequence': 'target_sequence'
+                })
+            else:
+                output_df = pd.DataFrame(columns=['backbone_path', 'target_sequence', 'score'])
+            
+            output_df.to_csv(output.best_sequences_csv, index=False)
+
+rule threading_steered_MD:
+    input:
+        prepared_pdbs_dir = RF_PDB_DIR,
+        sequences_csv = rules.process_steered_MD_MPNN.output.best_sequences_csv
+    output:
+        threaded_pdbs_dir = directory(f"{OUTPUT_DIR}/threaded_pdbs_steered_MD")
+    params:
+        seq_threading_script = "seq_threading.py",
+        num_workers = 8
+    resources:
+        cpu=8
+    run:
+        import os
+        
+        # Create output directory
+        os.makedirs(output.threaded_pdbs_dir, exist_ok=True)
+        
+        # Call seq_threading.py with parallel workers
+        output_results_csv = os.path.join(output.threaded_pdbs_dir, "threading_results.csv")
+        cmd = [
+            f"python {params.seq_threading_script}",
+            f"--input_csv {input.sequences_csv}",
+            f"--output_csv {output_results_csv}",
+            f"--output_dir {output.threaded_pdbs_dir}",
+            f"--num_workers {params.num_workers}"
+        ]
+        shell(' '.join(cmd))
+        print(f"Threading completed. Results saved to {output_results_csv}")
+
+rule initialize_steered_MD:
+    input:
+        threaded_pdbs_dir = rules.threading_steered_MD.output.threaded_pdbs_dir
+    output:
+        equilibrated_pdbs_dir = directory(f"{OUTPUT_DIR}/steered_MD/equilibrated_pdbs")
+    params:
+        prepare_script = "prepare_steered_MD.py"
+    resources:
+        gpu=1
+    run:
+        import os
+        from pathlib import Path
+        
+        # Create output directory
+        os.makedirs(output.equilibrated_pdbs_dir, exist_ok=True)
+        
+        # Find all PDB files in the threaded output directory
+        threaded_pdbs = list(Path(input.threaded_pdbs_dir).glob("*.pdb"))
+        
+        if not threaded_pdbs:
+            print(f"Warning: No PDB files found in {input.threaded_pdbs_dir}")
+            return
+        
+        print(f"Processing {len(threaded_pdbs)} threaded PDB files...")
+        
+        # Process each threaded PDB
+        for pdb_file in threaded_pdbs:
+            output_pdb = os.path.join(output.equilibrated_pdbs_dir, f"{pdb_file.stem}_equilibrated.pdb")
+            cmd = f"python {params.prepare_script} --input_pdb {pdb_file} --output_pdb {output_pdb}"
+            shell(cmd)
+            print(f"Processed {pdb_file.name} -> {os.path.basename(output_pdb)}")
+        
+        print(f"Initialization complete. Equilibrated structures saved to {output.equilibrated_pdbs_dir}")
+
+rule steered_MD:
+    input:
+        equilibrated_pdbs_dir = rules.initialize_steered_MD.output.equilibrated_pdbs_dir
+    output:
+        smd_frames_dir = directory(f"{OUTPUT_DIR}/steered_MD/smd_frames")
+    params:
+        steered_md_script = "steered_MD.py",
+        domain_A_json = config.get('domain_A_json'),
+        domain_B_json = config.get('domain_B_json'),
+        total_time_ns = config.get('smd_total_time_ns', 5.0),
+        initial_distance = config.get('smd_initial_distance', 2.5),
+        target_distance = config.get('smd_target_distance', 4.0),
+        spring_constant = config.get('smd_spring_constant', 10000.0),
+        num_frames = config.get('smd_num_frames', 10)
+    resources:
+        gpu=1
+    run:
+        import os
+        from pathlib import Path
+        
+        # Create output directory
+        os.makedirs(output.smd_frames_dir, exist_ok=True)
+        
+        # Validate domain JSON files exist
+        if not params.domain_A_json or not params.domain_B_json:
+            raise ValueError("domain_A_json and domain_B_json must be specified in config")
+        if not os.path.exists(params.domain_A_json) or not os.path.exists(params.domain_B_json):
+            raise FileNotFoundError(f"Domain JSON files not found: {params.domain_A_json}, {params.domain_B_json}")
+        
+        # Find all equilibrated PDB files
+        equilibrated_pdbs = sorted(list(Path(input.equilibrated_pdbs_dir).glob("*.pdb")))
+        
+        if not equilibrated_pdbs:
+            print(f"Warning: No equilibrated PDB files found in {input.equilibrated_pdbs_dir}")
+            os.makedirs(output.smd_frames_dir, exist_ok=True)
+            return
+        
+        print(f"Running SMD simulations on {len(equilibrated_pdbs)} equilibrated structures...")
+        
+        # Process each equilibrated PDB
+        for pdb_file in equilibrated_pdbs:
+            # Create output directory for this structure's frames
+            struct_name = pdb_file.stem
+            struct_frames_dir = os.path.join(output.smd_frames_dir, struct_name)
+            os.makedirs(struct_frames_dir, exist_ok=True)
+            
+            # Build and run steered MD command
+            cmd = [
+                f"python {params.steered_md_script}",
+                f"--input_pdb {pdb_file}",
+                f"--output_dir {struct_frames_dir}",
+                f"--domain_A_json {params.domain_A_json}",
+                f"--domain_B_json {params.domain_B_json}",
+                f"--total_time_ns {params.total_time_ns}",
+                f"--initial_distance {params.initial_distance}",
+                f"--target_distance {params.target_distance}",
+                f"--spring_constant {params.spring_constant}",
+                f"--num_frames {params.num_frames}"
+            ]
+            
+            print(f"\\nRunning SMD for {struct_name}...")
+            shell(' '.join(cmd))
+            print(f"Completed: {struct_name} -> {struct_name}/smd_frame_*.pdb")
+        
+        print(f"\\nAll SMD simulations complete. Frames saved to {output.smd_frames_dir}")
+
+# -----------------------------------------------------------------------------
+# 4. PHASE 3: SCATTER MULTISTATE MPNN + Ligand MPNN (parallel on GPUs)
+# -----------------------------------------------------------------------------
+# In this phase we use the implementation of MPNN from the Khulman lab, which allows us to design sequences based on multiple input structures simultaneously.
+# We use as reference the representative open and closed states obtained from the previous phase.
+# We also might have an option to run LigandMPNN here aswell
+rule run_multistate_MPNN:
+    input:
+        monomer_closed_state= rules.clean_and_gather_info.output.monomer_ref_w_ligand,
+        monomer_open_state=rules.steered_MD.output.md_closed_state
+    output:
+        mpnn_designs_dir = directory(f"{OUTPUT_DIR}/MPNN_designs")
+    run:
+        gpu_token, gpu_lock_fd = acquire_pipeline_gpu()
+            try:
+                # Gather residues to redesign from the structural matching dictionary
+                print(f"[gpu-pin] rule=run_multistate_MPNN split={wildcards.split_id} gpu={gpu_token} host={os.uname().nodename}")
+                # Using your global Python variables perfectly here
+                cmd_parts = [
+                    f"conda run -p {path_to_RosettaMPNN_env} python {path_to_RosettaMPNN_script}",
+                    f"--pdb_path {input.paths_json}",
+                    f"--out_folder {params.out_folder}",
+                    f"--checkpoint_protein_mpnn {params.out_folder}",
+                    f"--save_stats 1",
+                    f"--batch_size {multistate_MPNN_num_designs}",
+                    f"--number_of_batches {multistate_MPNN_num_batches}",
+                    f"--model_type {multistate_MPNN_model_type}",
+                    f"--checkpoint_ligand_mpnn {path_to_mpnn_model}",
+                    f"--temperature {multistate_MPNN_temperature}",
+                    f"--multi_state_pdb_path {multistate_MPNN_temperature}", # Path to a JSON file listing the PDBs to be included
+                    f"--redesigned_residues \"{input.res_json}\""
+                ]
+
+                if omit_aa_global:
+                    cmd_parts.append(f"--omit_AA {omit_aa_global}")
+                if bias_aa_global:
+                    cmd_parts.append(f"--bias_AA {bias_aa_global}")
+
+                shell(f"export CUDA_VISIBLE_DEVICES='{gpu_token}'; {' '.join(cmd_parts)}")
+            finally:
+                release_pipeline_gpu(gpu_lock_fd)
+        else:
+            print(f"Chunk {wildcards.split_id} is empty. Skipping LigandMPNN execution.")
+            shell(f"mkdir -p {output.seqs_dir}")
+        
+        # Create completion marker file
+        os.makedirs(os.path.dirname(output.done_flag), exist_ok=True)
+        with open(output.done_flag, "w") as f:
+            f.write("done")
+        pass
+
+### THIS SECTION NEEDS TO BE UPDATED
 rule generate_mpnn_jsons:
     input:
         rf_pdbs = RF_PDB_DIR,
@@ -403,7 +829,7 @@ rule process_mpnn_output_and_filter:
         mpnn_df.to_csv(output.mpnn_filtered_csv, index=False)
 
 # -----------------------------------------------------------------------------
-# 3. PHASE 2: SCATTER ESMfold (Parallel on GPUs)
+# 5. PHASE 4: SCATTER ESMfold (Parallel on GPUs)
 # -----------------------------------------------------------------------------
 # Here, we will run ESMfold on all the MPNN designs that passed the 1D filter. This is another scatter step that can be fully parallelized on GPUs. The outputs will be the predicted structures for each design.
 # So we need to adapt the ESM_highthroughput script to be scatter rather than bulk. Each ESMfold run will take one sequence, predict its structure, and save the output pdb.
@@ -483,13 +909,13 @@ rule gather_esm_pdbs:
 
 
 # -----------------------------------------------------------------------------
-# 4. PHASE 3: FIRST CHECKPOINT (3D Params, Filter & GNINA)
+# 6. PHASE 5: FIRST CHECKPOINT (3D Params, Filter & GNINA)
 # -----------------------------------------------------------------------------
 # This is a 'checkpoint' instead of a 'rule'. Snakemake will re-evaluate 
 # the rest of the pipeline AFTER this step finishes.
 
 # First, we will calculate the 3D parameters for all ESMfold predictions. Then, we will apply a 3D filter to select survivors. 
-#Finally, we will run GNINA on the survivors to get binding scores and filter by that as well. 
+# Finally, we will run GNINA on the survivors to get binding scores and filter by that as well. 
 # The final output of this checkpoint will be a csv with the survivors and their scores, which will be the input for the next phase.
 rule sample_best_conformer:
     output:
@@ -605,7 +1031,70 @@ def get_survivor_ids(wildcards):
     return df['file_ID'].tolist()
 
 # -----------------------------------------------------------------------------
-# 5. PHASE 4: SCATTER Boltz ON SURVIVORS (Parallel on GPUs)
+# 7. PHASE 6: MULTISTATE FILTERING (Parallel on GPUs)
+# -----------------------------------------------------------------------------
+# In this phase we run the multistate filtering script. This will thread the sequences into the reference backbones and compute the energy barrier
+# between states. This will give us a final score to rank the survivors from the previous phase, and we can select the top ones to move forward.
+rule generate_two_state_csv:
+    input:
+    
+    output:
+
+    run:
+        # This rule is supposed to take the suriviving sequences of the previous step and generate a csv formatted for threading
+        # The trick here is that the CSV contain each sequence two times, one associated to the open state and one to the closed one
+        # This way the threading rule will generate the energy estimate for both
+        pass
+
+
+rule threading_for_multistate_filter:
+    input:
+        two_state_csv = rules.generate_two_state_csv.output.two_state_csv
+    output:
+        threaded_dir = directory(f"{OUTPUT_DIR}/multistate_threaded")
+    params:
+        seq_threading_script = "seq_threading_multistate.py",
+        num_workers = 8
+    resources:
+        cpu=8
+    run:
+        import os
+        
+        # Create output directory
+        os.makedirs(output.threaded_dir, exist_ok=True)
+        
+        # Call seq_threading_multistate.py with parallel workers
+        output_results_csv = os.path.join(output.threaded_dir, "threading_results.csv")
+        cmd = [
+            f"python {params.seq_threading_script}",
+            f"--input_csv {input.two_state_csv}",
+            f"--output_csv {output_results_csv}",
+            f"--output_dir {output.threaded_dir}",
+            f"--num_workers {params.num_workers}"
+        ]
+        shell(' '.join(cmd))
+        print(f"Threading for multistate filter completed. Results saved to {output_results_csv}")
+
+
+rule multistate_filter:
+    input:
+        threaded_dir = rules.threading_for_multistate_filter.output.threaded_dir
+    output:
+        multistate_filtered_csv = f"{OUTPUT_DIR}/multistate_filtered.csv"
+    run:
+        # This rule is supposed to take the csv output of the previous step.
+        # It should produce a new df that has the columns id, seq, score_open, score_closed, delta
+        # And then it should filter based on the delta score, and output a new csv with the survivors for the next step
+        
+        pass
+# -----------------------------------------------------------------------------
+# 8. PHASE 7: Dimerization interface generation (Parallel on GPUs)
+# -----------------------------------------------------------------------------
+# In this phase we run the dimerization interface generation script. This will iteratively thread, dock and optimise the dimer interface of the survivors from
+# the previous phase, to generate new sequences that are more likely to dimerize upon ligand binding.
+
+# -----------------------------------------------------------------------------
+# 9. PHASE 8: SCATTER Boltz ON SURVIVORS (Parallel on GPUs)
 # -----------------------------------------------------------------------------
 
 # I will run each of the surviving sequences through Boltz, in an scatter manner. Keep in mind that each sequence requires one yaml file with the Boltz parameters, which will be generated from the csv of survivors. 
@@ -754,11 +1243,13 @@ rule process_boltz_folder:
             open(output.metrics_csv, 'a').close()
 
 # -----------------------------------------------------------------------------
-# 6. PHASE 5: SCATTER SECOND PREDICTION (Parallel on GPUs)
+# 10. PHASE 9: SCATTER SECOND PREDICTION (Parallel on GPUs)
 # -----------------------------------------------------------------------------
 # We will also run each of the surviving sequences through either Chai or AF3, chosen by the user. This is another scatter step that can be parallelized on GPUs.
 # For each surviving sequence, a regular and a cofold prediction will be run. Keep in mind that also the user will configure wether MSAs and or templates are used 
 #The outputs will be the predicted structures and cofold structures for each survivor after Boltz design.
+
+# I need to update this with template guiding and dimer predictions aswell
 
 rule run_second_prediction:
     input:
@@ -824,7 +1315,7 @@ rule process_second_prediction_folder:
         else:
             raise ValueError(f"Unknown model_flag: {params.model}")
 # -----------------------------------------------------------------------------
-# 7. PHASE 6: GATHER FINAL CANDIDATES (3D Params, Filter & GNINA)
+# 11. PHASE 10: GATHER FINAL CANDIDATES (3D Params, Filter & GNINA)
 # -----------------------------------------------------------------------------
 # At this step we have three kinds of structures for each survivor: Boltz, regular prediction, and cofold prediction. 
 # We will calculate 3D parameters for all of them, apply a final 3D filter, and run GNINA to get the final scores. 
@@ -925,10 +1416,8 @@ rule gather_final_candidates:
             release_pipeline_gpu(fd)
 
 # -----------------------------------------------------------------------------
-# 8. PHASE 7: GENERATE VISUALISATIONS
+# 12. PHASE 11: GENERATE VISUALISATIONS
 # -----------------------------------------------------------------------------
-
-
 
 rule plot_plddt_vs_tmscore:
     input:

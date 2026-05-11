@@ -841,8 +841,7 @@ def boltz_yaml_generator_w_msa(row, yaml_path, ligand_smiles, pocket_list, max_d
                 {
                     "protein": {
                         "id": "A",
-                        "sequence": seq,
-                        "msa": "empty"  
+                        "sequence": seq
                     }
                 },
                 {
