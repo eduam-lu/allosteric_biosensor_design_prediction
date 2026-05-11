@@ -27,12 +27,6 @@ from snakemake.shell import shell
 sys.path.insert(0, os.path.dirname(__file__))
 import functions_snakemake_rfd as func
 
-# ============================================================================
-# CONFIGURATION LOADING
-# ============================================================================
-
-# Load configuration file
-configfile: "config_rfdiffusion_bsd.yml"
 
 # ============================================================================
 # PARAMETERS - All config values loaded with defaults
@@ -442,7 +436,7 @@ rule run_rf_diffusion:
     params:
         output_dir = f"{output_dir}/RF_designs",
         rf_model = RF_model,
-        ligand_resname = ligand_resname,
+        ligand_name = ligand_name,
         num_designs = num_designs,
         T = T,
         deterministic = deterministic,
@@ -549,7 +543,7 @@ rule run_rf_diffusion:
                         num_designs=params.num_designs,
                         chain_id=chain_id,
                         path_to_RF3_env=params.path_to_RF3_env,
-                        ligand_resname=params.ligand_resname,
+                        ligand_name=params.ligand_name,
                         checkpoint_path=params.RF3_checkpoint_path,
                         batch_size=params.RF3_batch_size,
                         use_classifier_free_guidance=params.RF3_use_classifier_free_guidance,

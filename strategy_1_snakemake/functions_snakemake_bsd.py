@@ -841,8 +841,7 @@ def boltz_yaml_generator_w_msa(row, yaml_path, ligand_smiles, pocket_list, max_d
                 {
                     "protein": {
                         "id": "A",
-                        "sequence": seq,
-                        "msa": "empty"  
+                        "sequence": seq
                     }
                 },
                 {
@@ -1722,8 +1721,9 @@ def process_Boltz_folder(input_folder, output_pdbs_folder):
                 data = json.load(f)
 
             # Derive file_ID (e.g., structure_..._model_0)
-            file_id = json_file.stem.replace("confidence_", "")
-            file_id = file_id.replace("_model_0", "")
+            raw_id = json_file.stem.replace("confidence_", "")
+            # Only remove the trailing model suffix, not any internal file name tokens.
+            file_id = re.sub(r"_model_0$", "", raw_id)
             # Extract standard confidence fields
             row = {
                 "file_ID": file_id,

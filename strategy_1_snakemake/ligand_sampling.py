@@ -100,10 +100,26 @@ def sample_conformers(molecule, n_conformers, rmsd_cutoff, output, ligand_name="
 
     energies = np.array(energies)
 
-    # Save PDBs
+    # Create heavy-atom-only copy for PDB output (RFD3 expects no hydrogens)
+    mol_noH = Chem.RemoveAllHs(mol)
+
+    # Set ligand residue name in PDB output
+    for atom in mol_noH.GetAtoms():
+        mi = Chem.AtomPDBResidueInfo()
+        mi.SetResidueName(ligand_name[:3])
+        mi.SetResidueNumber(1)
+        mi.SetChainId("X")
+        mi.SetIsHeteroAtom(True)
+        symbol = atom.GetSymbol()
+        idx = atom.GetIdx() + 1
+        atom_name = f" {symbol}{idx}" if len(symbol) == 1 else f"{symbol}{idx}"
+        mi.SetName(f"{atom_name:<4s}")
+        atom.SetMonomerInfo(mi)
+
+    # Save PDBs (heavy atoms only)
     for cid in conf_ids:
         filename = out_dir / f"{ligand_name}_conf_{cid}.pdb"
-        Chem.MolToPDBFile(mol, str(filename), confId=cid)
+        Chem.MolToPDBFile(mol_noH, str(filename), confId=cid)
 
     print(f"{n_conformers} conformers generated and saved successfully.")
 

@@ -634,7 +634,7 @@ def run_rfAA(output_path, input_pdb, contig_map, num_designs, T,
     subprocess.run(rfAA_command, shell=True)
 
 
-def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, num_designs_batch, 
+def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_name, num_designs_batch, 
                       chain_id='A', checkpoint_path='rfd3', batch_size=1, 
                       use_classifier_free_guidance=False, cfg_scale=1.5, num_timesteps=200, 
                       step_scale=1.5, noise_scale=1.003, gamma_0=0.6, gamma_min=1.0, 
@@ -646,7 +646,7 @@ def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, n
         output_yaml_path (str): Path to save the YAML configuration
         input_pdb (str): Path to input PDB structure
         contig_map (str): Contig string specifying design regions
-        ligand_resname (str): Ligand residue name (e.g., 'UNL', 'LIG')
+        ligand_name (str): Ligand name (truncated to 3 chars for PDB residue name)
         num_designs_batch (int): Number of designs per batch
         chain_id (str): Protein chain ID (default 'A')
         checkpoint_path (str): Path to RF3 model checkpoint (default 'rfd3')
@@ -673,7 +673,25 @@ def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, n
         return s
 
     normalized_contig = _clean_str(contig_map)
-    normalized_ligand = "UNL"
+    ligand_resname = ligand_name[:3]
+
+    # Find the ligand's chain ID and residue number from the input PDB
+    # RFD3 requires ChainIDResID format (e.g., 'X1'), not residue names
+    ligand_chain = None
+    ligand_resnum = None
+    with open(input_pdb, 'r') as f:
+        for line in f:
+            if line.startswith('HETATM') and len(line) >= 26:
+                resname = line[17:20].strip()
+                if resname == ligand_resname:
+                    ligand_chain = line[21].strip()
+                    ligand_resnum = line[22:26].strip()
+                    break
+
+    if ligand_chain and ligand_resnum:
+        ligand_id = f"{ligand_chain}{ligand_resnum}"
+    else:
+        raise ValueError(f"Could not find ligand '{ligand_resname}' in {input_pdb}")
 
     # Build RF3 inputs YAML
     input_specs = {
@@ -681,9 +699,9 @@ def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, n
             "input": input_pdb,
             "contig": normalized_contig,
             "select_fixed_atoms": {
-                "UNL": ""
+                ligand_id: ""
             },
-            "ligand": normalized_ligand
+            "ligand": ligand_id
         }
     }
 
@@ -694,7 +712,7 @@ def generate_rf3_yaml(output_yaml_path, input_pdb, contig_map, ligand_resname, n
 
 
 def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id, 
-             path_to_RF3_env=None, ligand_resname='LIG', checkpoint_path='rfd3', 
+             path_to_RF3_env=None, ligand_name='LIG', checkpoint_path='rfd3', 
              batch_size=1, use_classifier_free_guidance=False, cfg_scale=1.5, 
              num_timesteps=200, step_scale=1.5, noise_scale=1.003, gamma_0=0.6, 
              gamma_min=1.0, dump_trajectories=False, prevalidate_inputs=False, 
@@ -750,7 +768,7 @@ def run_rfd3(output_path, input_pdb, contig_map, pdb_info, num_designs, chain_id
         output_yaml_path=yaml_path,
         input_pdb=rf3_input_pdb,
         contig_map=contig_map,
-        ligand_resname=ligand_resname,
+        ligand_name=ligand_name,
         num_designs_batch=num_designs,
         chain_id=chain_id,
         checkpoint_path=checkpoint_path,

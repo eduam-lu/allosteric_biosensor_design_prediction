@@ -615,7 +615,7 @@ rule prep_boltz_yaml:
         survivors_csv = f"{OUTPUT_DIR}/checkpoints/ESM_survivors.csv"
     output:
         yaml = f"{OUTPUT_DIR}/boltz_yamls/{{survivor_id}}.yaml"
-    param:
+    params:
         use_msa_boltz = use_msa_boltz,
     run:
         df = pd.read_csv(input.survivors_csv)
@@ -1044,11 +1044,10 @@ rule plot_gnina:
             dfs=dfs,
             titles=titles,
             x_col="Gnina_CNNscore", # Column names based on functions_bsd.py
-            y_col="Gnina_affinity",
-            # NOTE: Adjust these ranges based on your desired GNINA cutoffs! 
+            y_col="Gnina_affinity", 
             # CNNscore is [0, 1]. Affinity is typically negative (kcal/mol), so lower is better.
-            x_range=[0.5, 1.0],      # Example: CNNscore >= 0.5
-            y_range=[-15.0, -5.0],   # Example: Affinity between -15 and -5 kcal/mol
+            x_range=[0.6, 1.0],      # Example: CNNscore >= 0.5
+            y_range=[6, 10],   # Example: Affinity between -15 and -5 kcal/mol
             output_file=plot_path 
         )
 
