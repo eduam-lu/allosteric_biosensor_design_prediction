@@ -21,7 +21,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import Bio.PDB as PDB
 from Bio.PDB import PDBParser, MMCIFParser, DSSP, NeighborSearch, Selection
-from Bio.PDB.Polypeptide import is_aa, seq1
+from Bio.PDB.Polypeptide import is_aa
+from Bio.SeqUtils import seq1
 from Bio.PDB.SASA import ShrakeRupley
 import biotite.structure.io as bsio
 
@@ -30,12 +31,12 @@ import biotite.structure.io as bsio
 ################################################################################
 
 # ============ INPUT/OUTPUT PATHS ============
-INPUT_PDB_PATH = "./reference_structure.pdb"
-OUTPUT_JSON_PATH = "./reference_profile.json"
+INPUT_PDB_PATH = "/home/eduardo/allostery/structures/2XPU.pdb"
+OUTPUT_JSON_PATH = "./2XPU_profile/reference_profile.json"
 
 # ============ DIRECTORY PATHS ============
 BOLTZ_RUNS_DIR = None                    # Set to directory path if Boltz results exist (e.g., ./boltz_output)
-GNINA_OUTPUT_DIR = "./gnina_output"
+GNINA_OUTPUT_DIR = "./2XPU_profile/gnina_output"
 
 # ============ PROTEIN STRUCTURE PARAMETERS ============
 CHAIN_ID = 'A'                           # Chain ID to extract from PDB
@@ -48,7 +49,9 @@ SAP_SEARCH_RADIUS = 5.0                  # Search radius in Ångströms for SAP 
 # ============ BOLTZ PARAMETERS ============
 BOLTZ_CONFIG = {
     'enabled': False,                    # Set to True to run Boltz sampling
-    'n_iterations': 1,                   # Number of Boltz iterations
+    'ligand_id': None,                   # 3-letter PDB residue code for ligand (e.g., 'LIG', 'ATP')
+    'ligand_smiles': 'CCO',              # SMILES string for ligand
+    'n_iterations': 5,                   # Number of Boltz iterations
     'use_msa': True,                     # Enable MSA in Boltz
     'use_forces': True,                  # Use potentials in Boltz
     'no_kernels': False,                 # Disable GPU kernels
@@ -58,20 +61,18 @@ BOLTZ_CONFIG = {
     'diffusion_samples': 1,              # Number of diffusion samples
     'output_format': 'pdb',              # Output format (pdb, mmcif, etc.)
     'sampling_steps_affinity': 100,      # Sampling steps for affinity prediction
-    'path_to_boltz_env': None,           # Path to Boltz conda env (e.g., /home/user/mambaforge/envs/boltz)
+    'output_dir': './2XPU_profile/boltz_output',      # Output directory for Boltz runs
+    'max_dist': 5.0,                     # Max distance for pocket constraint
+    'ligand_search_radius': 5.0,         # Radius to discover binding residues
+    'path_to_boltz_env': "/home/eduardo/miniforge3/envs/boltz",           # Path to Boltz conda env (e.g., /home/user/mambaforge/envs/boltz)
 }
 
 # ============ GNINA PARAMETERS ============
 GNINA_CONFIG = {
     'enabled': False,                    # Set to True to run GNINA scoring
-    'gnina_path': '/path/to/gnina',      # Path to GNINA executable
-    'ligand_smiles': 'CCO',              # SMILES string for ligand
+    'gnina_path': 'gnina',      # Path to GNINA executable
     'ligand_id': 'LIG',                  # 3-letter PDB residue code for ligand
-    'residues': None,                    # Binding residues (None = auto-discover from ligand)
-    'ligand_search_radius': 5.0,         # Radius in Ångströms to find residues near ligand
-    'size': 20.0,                        # Box size for GNINA scoring
-    'exhaustiveness': 8,                 # GNINA exhaustiveness parameter
-    'cnn': 'dense',                      # CNN model for GNINA
+    'output_folder': './2XPU_profile/gnina_output',   # Output directory for GNINA results
 }
 
 ################################################################################
@@ -912,77 +913,312 @@ def run_Boltz2(row,ligand_smiles, output_path,pocket_list, max_dist, use_msa=Tru
 
     return boltz_process
 
-def gnina_minimize_defined_box(pdb_file,
-                           ligand,
-                           output_folder,
-                           gnina_path,
-                           cnn,
-                           exhaustiveness, 
-                           residues, size):
+def clean_pdb(pdb_path, output_path, keep_ligand_id=None, remove_water=True):
     """
-    This function both creates poses for the ligand for ESM predictions as well as computes the gnina scores
-    for each structure in the pdb_folder. Returns a dataframe with GNina metrics
+    Clean a PDB file by removing waters and non-target molecules.
     
-    :param pdb_folder: Description
-    :param ligand: Description
-    :param output_folder: Description
-    :param gnina_path: Description
-    :param cnn: Description
-    :param exhaustiveness: Description
-    :param autobox_add: Description
+    Args:
+        pdb_path (str): Path to input PDB file.
+        output_path (str): Path to save cleaned PDB.
+        keep_ligand_id (str, optional): 3-letter residue code to keep (e.g., 'LIG', 'ATP').
+                                         If None, keeps only protein.
+        remove_water (bool): Whether to remove water molecules. Default: True.
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'output_path': str,
+            'original_residues': int,
+            'cleaned_residues': int,
+            'removed_count': int,
+            'error': str | None
+        }
     """
-    # Create output directory if it doesn't exist
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
-
-    # Create box dictionary
-    box_dict = gnina_box_generator(pdb_file, residues, size)
-
-    # Prepare gnina command
-    # Note: Added check to ensure pdb_file is a Path object or string
-    pdb_path = Path(pdb_file)
-    output_path = Path(output_folder) / f"{pdb_path.stem}_ligand.pdb"
+    parser = PDBParser(QUIET=True)
     
-    gnina_command = (
-        f'{gnina_path} -r {pdb_file} -l {ligand}  --center_x {box_dict["center_x"]} --center_y {box_dict["center_y"]} --center_z {box_dict["center_z"]} '
-        f'--size_x {box_dict["size_x"]} --size_y {box_dict["size_y"]} --size_z {box_dict["size_z"]} '
-        f'-o {output_path} --minimize '
-        f'--exhaustiveness {exhaustiveness} --cnn {cnn}'
-    )
+    try:
+        structure = parser.get_structure('struct', pdb_path)
+    except Exception as e:
+        return {
+            'success': False,
+            'output_path': None,
+            'original_residues': 0,
+            'cleaned_residues': 0,
+            'removed_count': 0,
+            'error': f"Error parsing PDB: {str(e)}"
+        }
     
-    # Run the command
-    gnina_result = subprocess.run(gnina_command, shell=True, capture_output=True, text=True)
+    original_count = 0
+    cleaned_count = 0
+    removed_count = 0
     
-    # Optional: Debug prints (can comment out for production)
-    # print(gnina_command)
-    # print(gnina_result.stdout)
+    # Build a new structure with only desired residues
+    for model in structure:
+        residues_to_remove = []
+        
+        for chain in model:
+            for residue in list(chain):
+                original_count += 1
+                res_name = residue.get_resname().strip()
+                
+                # Keep protein residues
+                if PDB.is_aa(residue):
+                    cleaned_count += 1
+                    continue
+                
+                # Keep target ligand if specified
+                if keep_ligand_id and res_name == keep_ligand_id:
+                    cleaned_count += 1
+                    continue
+                
+                # Remove water if flag is set
+                if remove_water and res_name in ['HOH', 'WAT', 'H2O']:
+                    residues_to_remove.append((chain, residue))
+                    removed_count += 1
+                    continue
+                
+                # Remove other heteroatoms
+                residues_to_remove.append((chain, residue))
+                removed_count += 1
+        
+        # Remove marked residues
+        for chain, residue in residues_to_remove:
+            chain.detach_child(residue.id)
     
-    output = gnina_result.stdout
+    # Write cleaned structure
+    try:
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        io = PDB.PDBIO()
+        io.set_structure(structure)
+        io.save(str(output_file))
+        
+        return {
+            'success': True,
+            'output_path': str(output_file),
+            'original_residues': original_count,
+            'cleaned_residues': cleaned_count,
+            'removed_count': removed_count,
+            'error': None
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'output_path': None,
+            'original_residues': original_count,
+            'cleaned_residues': cleaned_count,
+            'removed_count': removed_count,
+            'error': f"Error writing PDB: {str(e)}"
+        }
 
-    # --- Parsing Logic ---
 
-    # 1. Capture CNN Score
-    # Matches: "CNNscore: 0.41463"
-    match_cnn_score = re.search(r"CNNscore:\s*([-\d.]+)", output)
-    CNN_score = float(match_cnn_score.group(1)) if match_cnn_score else None
-
-    # 2. Capture CNN Affinity
-    # Matches: "CNNaffinity: 4.86840"
-    match_cnn_aff = re.search(r"CNNaffinity:\s*([-\d.]+)", output)
-    CNN_affinity = float(match_cnn_aff.group(1)) if match_cnn_aff else None
-
-    # 3. Capture both Affinity Scores
-    # Matches: "Affinity: -6.19290  -0.54008"
-    # This regex looks for: "Affinity:", spaces, Group 1 (number), spaces, Group 2 (number)
-    match_aff = re.search(r"Affinity:\s*([-\d.]+)\s+([-\d.]+)", output)
+def extract_ligand_to_sdf(pdb_path, ligand_id, output_sdf_path):
+    """
+    Extract a ligand from a PDB file and save as SDF, preserving 3D coordinates.
     
-    if match_aff:
-        vina_affinity = float(match_aff.group(1))
-        vina_affinity_2 = float(match_aff.group(2))
-    else:
-        vina_affinity = None
-        vina_affinity_2 = None
+    Args:
+        pdb_path (str): Path to input PDB file.
+        ligand_id (str): 3-letter residue code for the ligand (e.g., 'LIG', 'ATP').
+        output_sdf_path (str): Path to save output SDF file.
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'output_path': str,
+            'ligand_atoms': int,
+            'error': str | None
+        }
+    """
+    try:
+        # Use RDKit to read PDB and extract ligand
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        
+        # Read the PDB file
+        mol = Chem.MolFromPDBFile(str(pdb_path))
+        if mol is None:
+            return {
+                'success': False,
+                'output_path': None,
+                'ligand_atoms': 0,
+                'error': f"RDKit could not parse PDB: {pdb_path}"
+            }
+        
+        # Write all atoms to SDF (RDKit preserves 3D coordinates from PDB)
+        output_file = Path(output_sdf_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        writer = Chem.SDWriter(str(output_file))
+        writer.write(mol)
+        writer.close()
+        
+        return {
+            'success': True,
+            'output_path': str(output_file),
+            'ligand_atoms': mol.GetNumAtoms(),
+            'error': None
+        }
+    
+    except ImportError:
+        # Fallback: Use Biopython to extract ligand atoms
+        parser = PDBParser(QUIET=True)
+        
+        try:
+            structure = parser.get_structure('struct', pdb_path)
+        except Exception as e:
+            return {
+                'success': False,
+                'output_path': None,
+                'ligand_atoms': 0,
+                'error': f"Error parsing PDB: {str(e)}"
+            }
+        
+        ligand_atoms = []
+        ligand_residues = []
+        
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if residue.get_resname().strip() == ligand_id:
+                        ligand_residues.append(residue)
+                        ligand_atoms.extend(residue.get_atoms())
+        
+        if not ligand_atoms:
+            return {
+                'success': False,
+                'output_path': None,
+                'ligand_atoms': 0,
+                'error': f"Ligand '{ligand_id}' not found in PDB"
+            }
+        
+        # Write ligand structure to PDB first, then convert
+        try:
+            # Create a temporary structure with just the ligand
+            new_structure = PDB.Structure.Structure('ligand')
+            new_model = PDB.Model.Model(0)
+            new_chain = PDB.Chain.Chain('L')
+            
+            for residue in ligand_residues:
+                new_chain.add(residue.copy())
+            
+            new_model.add(new_chain)
+            new_structure.add(new_model)
+            
+            # Write to PDB first
+            temp_pdb = Path(output_sdf_path).parent / f"{Path(output_sdf_path).stem}_temp.pdb"
+            io = PDB.PDBIO()
+            io.set_structure(new_structure)
+            io.save(str(temp_pdb))
+            
+            # Try to convert PDB to SDF using rdkit
+            try:
+                mol = Chem.MolFromPDBFile(str(temp_pdb))
+                if mol:
+                    output_file = Path(output_sdf_path)
+                    output_file.parent.mkdir(parents=True, exist_ok=True)
+                    writer = Chem.SDWriter(str(output_file))
+                    writer.write(mol)
+                    writer.close()
+                    temp_pdb.unlink()
+                    return {
+                        'success': True,
+                        'output_path': str(output_file),
+                        'ligand_atoms': mol.GetNumAtoms(),
+                        'error': None
+                    }
+            except:
+                pass
+            
+            # Fallback: just use the PDB as output (user can convert later)
+            output_file = Path(output_sdf_path).parent / f"{Path(output_sdf_path).stem}.pdb"
+            return {
+                'success': True,
+                'output_path': str(output_file),
+                'ligand_atoms': len(ligand_atoms),
+                'error': 'RDKit not available; saved as PDB instead of SDF'
+            }
+        
+        except Exception as e:
+            return {
+                'success': False,
+                'output_path': None,
+                'ligand_atoms': 0,
+                'error': f"Error extracting ligand: {str(e)}"
+            }
 
-    return CNN_score, CNN_affinity, vina_affinity, vina_affinity_2
+
+def gnina_simple(receptor_pdb, ligand_file, output_file, gnina_path='/path/to/gnina'):
+    """
+    Run GNINA with simple minimization (no autoboxing).
+    
+    Command: gnina -r rec.pdb -l ligs.sdf --minimize -o minimized.sdf.gz
+    
+    Args:
+        receptor_pdb (str): Path to cleaned receptor PDB.
+        ligand_file (str): Path to ligand SDF/PDB file.
+        output_file (str): Path to save minimized output.
+        gnina_path (str): Path to GNINA executable.
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'output_path': str,
+            'cnn_score': float | None,
+            'cnn_affinity': float | None,
+            'vina_affinity': float | None,
+            'vina_affinity_2': float | None,
+            'stdout': str,
+            'stderr': str,
+            'error': str | None
+        }
+    """
+    gnina_command = f"{gnina_path} -r {receptor_pdb} -l {ligand_file} --minimize -o {output_file}"
+    
+    try:
+        gnina_result = subprocess.run(gnina_command, shell=True, capture_output=True, text=True)
+        output = gnina_result.stdout
+        
+        # Parse output for scores
+        match_cnn_score = re.search(r"CNNscore:\s*([-\d.]+)", output)
+        CNN_score = float(match_cnn_score.group(1)) if match_cnn_score else None
+        
+        match_cnn_aff = re.search(r"CNNaffinity:\s*([-\d.]+)", output)
+        CNN_affinity = float(match_cnn_aff.group(1)) if match_cnn_aff else None
+        
+        match_aff = re.search(r"Affinity:\s*([-\d.]+)\s+([-\d.]+)", output)
+        if match_aff:
+            vina_affinity = float(match_aff.group(1))
+            vina_affinity_2 = float(match_aff.group(2))
+        else:
+            vina_affinity = None
+            vina_affinity_2 = None
+        
+        return {
+            'success': True,
+            'output_path': output_file,
+            'cnn_score': CNN_score,
+            'cnn_affinity': CNN_affinity,
+            'vina_affinity': vina_affinity,
+            'vina_affinity_2': vina_affinity_2,
+            'stdout': output,
+            'stderr': gnina_result.stderr,
+            'error': None
+        }
+    
+    except Exception as e:
+        return {
+            'success': False,
+            'output_path': None,
+            'cnn_score': None,
+            'cnn_affinity': None,
+            'vina_affinity': None,
+            'vina_affinity_2': None,
+            'stdout': '',
+            'stderr': str(e),
+            'error': f"GNINA execution error: {str(e)}"
+        }
+
 
 
 def find_residues_near_ligand(pdb_path, ligand_id, radius=5.0):
@@ -1233,7 +1469,80 @@ def generate_reference_profile_json(pdb_path=None,
             errors.append(f"Sequence profile computation error: {str(e)}")
     
     # ============ BOLTZ METRICS ============
-    if boltz_runs_dir:
+    if BOLTZ_CONFIG.get('enabled', False):
+        try:
+            # Prepare row data for Boltz sampling
+            if reference_data['sequence_info'] and 'coordinate_sequence' in reference_data['sequence_info']:
+                sequence = reference_data['sequence_info']['coordinate_sequence']
+                pdb_id = reference_data['sequence_info'].get('pdb_id', 'protein')
+                
+                # Auto-discover binding residues for pocket constraint
+                if BOLTZ_CONFIG.get('ligand_id'):
+                    residue_search = find_residues_near_ligand(
+                        pdb_path=str(pdb_path),
+                        ligand_id=BOLTZ_CONFIG['ligand_id'],
+                        radius=BOLTZ_CONFIG.get('ligand_search_radius', 5.0)
+                    )
+                    
+                    if residue_search['error']:
+                        errors.append(f"Boltz residue discovery error: {residue_search['error']}")
+                        pocket_list = []
+                    else:
+                        # Convert residue indices to [CHAIN, RES_IDX] format for pocket_list
+                        pocket_list = [[chain_id, res_idx] for res_idx in residue_search['residues']]
+                else:
+                    pocket_list = []
+                
+                # Create row dict for boltz_sampling
+                boltz_row = {
+                    'file_ID': pdb_id,
+                    'sequence': sequence
+                }
+                
+                # Prepare Boltz output directory
+                boltz_output_dir = Path(BOLTZ_CONFIG.get('output_dir', './boltz_output'))
+                
+                # Run Boltz sampling
+                boltz_result = boltz_sampling(
+                    row=boltz_row,
+                    ligand_smiles=BOLTZ_CONFIG.get('ligand_smiles', 'CCO'),
+                    output_path=str(boltz_output_dir),
+                    pocket_list=pocket_list,
+                    max_dist=BOLTZ_CONFIG.get('max_dist', 5.0),
+                    n_iterations=BOLTZ_CONFIG.get('n_iterations', 1),
+                    use_msa=BOLTZ_CONFIG.get('use_msa', True),
+                    use_forces=BOLTZ_CONFIG.get('use_forces', True),
+                    no_kernels=BOLTZ_CONFIG.get('no_kernels', False),
+                    path_to_boltz_env=BOLTZ_CONFIG.get('path_to_boltz_env'),
+                    devices=BOLTZ_CONFIG.get('devices', 1),
+                    recycling_steps=BOLTZ_CONFIG.get('recycling_steps', 3),
+                    sampling_steps=BOLTZ_CONFIG.get('sampling_steps', 100),
+                    diffusion_samples=BOLTZ_CONFIG.get('diffusion_samples', 1),
+                    output_format=BOLTZ_CONFIG.get('output_format', 'pdb'),
+                    sampling_steps_affinity=BOLTZ_CONFIG.get('sampling_steps_affinity', 100)
+                )
+                
+                # Process Boltz output
+                if boltz_result['run_folders']:
+                    latest_folder = boltz_result['run_folders'][-1]  # Last iteration
+                    boltz_metrics = process_boltz_output(str(latest_folder))
+                    reference_data['boltz_metrics'] = {
+                        'avg_confidence_score': boltz_metrics.get('avg_confidence_score'),
+                        'avg_affinity_pred_value': boltz_metrics.get('avg_affinity_pred_value'),
+                        'avg_affinity_probability_binary': boltz_metrics.get('avg_affinity_probability_binary'),
+                        'avg_plddt_per_position': boltz_metrics.get('avg_plddt_per_position', []),
+                        'num_confidence_files': boltz_metrics.get('num_confidence_files', 0),
+                        'num_affinity_files': boltz_metrics.get('num_affinity_files', 0),
+                        'num_pdbs': boltz_metrics.get('num_pdbs', 0),
+                        'source_directory': str(latest_folder),
+                        'run_folders': boltz_result['run_folders']
+                    }
+            else:
+                errors.append("Boltz enabled but sequence info not available")
+        except Exception as e:
+            errors.append(f"Boltz sampling execution error: {str(e)}")
+    elif boltz_runs_dir:
+        # Fallback: if an existing Boltz output directory is specified, process it
         boltz_path = Path(boltz_runs_dir)
         if boltz_path.exists():
             try:
@@ -1254,60 +1563,71 @@ def generate_reference_profile_json(pdb_path=None,
             errors.append(f"Boltz runs directory not found: {boltz_path}")
     
     # ============ GNINA SCORES ============
-    if gnina_config:
+    if gnina_config and gnina_config.get('enabled', False):
         try:
-            # Auto-discover binding residues if not provided
-            if 'residues' not in gnina_config or not gnina_config['residues']:
-                if 'ligand_id' in gnina_config:
-                    ligand_search_radius = gnina_config.get('ligand_search_radius', 5.0)
-                    residue_search = find_residues_near_ligand(
-                        pdb_path=str(pdb_path),
-                        ligand_id=gnina_config['ligand_id'],
-                        radius=ligand_search_radius
-                    )
-                    
-                    if residue_search['error']:
-                        errors.append(f"Residue discovery error: {residue_search['error']}")
-                    else:
-                        gnina_config['residues'] = residue_search['residues']
-                        reference_data['metadata']['ligand_discovery'] = {
-                            'ligand_id': gnina_config['ligand_id'],
-                            'ligand_centroid': residue_search['ligand_centroid'],
-                            'search_radius': ligand_search_radius,
-                            'residues_found': len(residue_search['residues']),
-                            'ligand_atoms': residue_search['ligand_atoms_count']
-                        }
-                else:
-                    errors.append("GNINA config: 'residues' not provided and 'ligand_id' not found for auto-discovery")
-            
-            # Check required keys for GNINA
-            required_keys = ['gnina_path', 'ligand_smiles', 'size']
+            # Check required keys
+            required_keys = ['gnina_path', 'ligand_id']
             if not all(k in gnina_config for k in required_keys):
                 errors.append(f"GNINA config missing keys. Required: {required_keys}")
-            elif 'residues' not in gnina_config or not gnina_config['residues']:
-                errors.append("GNINA config: 'residues' is empty or not provided")
             else:
-                cnn_score, cnn_affinity, vina_affinity, vina_affinity_2 = gnina_minimize_defined_box(
-                    pdb_file=str(pdb_path),
-                    ligand=gnina_config['ligand_smiles'],
-                    output_folder=gnina_config.get('output_folder', './gnina_output'),
-                    gnina_path=gnina_config['gnina_path'],
-                    cnn=gnina_config.get('cnn', 'dense'),
-                    exhaustiveness=gnina_config.get('exhaustiveness', 8),
-                    residues=gnina_config['residues'],
-                    size=gnina_config['size']
+                gnina_output_dir = Path(gnina_config.get('output_folder', './gnina_output'))
+                gnina_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Step 1: Clean the receptor PDB (remove water, keep target ligand)
+                cleaned_pdb = gnina_output_dir / f"{pdb_path.stem}_cleaned.pdb"
+                clean_result = clean_pdb(
+                    pdb_path=str(pdb_path),
+                    output_path=str(cleaned_pdb),
+                    keep_ligand_id=gnina_config['ligand_id'],
+                    remove_water=True
                 )
                 
-                reference_data['gnina_scores'] = {
-                    'cnn_score': cnn_score,
-                    'cnn_affinity': cnn_affinity,
-                    'vina_affinity': vina_affinity,
-                    'vina_affinity_2': vina_affinity_2,
-                    'residues_used': gnina_config['residues'],
-                    'box_size': gnina_config['size']
-                }
+                if not clean_result['success']:
+                    errors.append(f"GNINA PDB cleaning error: {clean_result['error']}")
+                else:
+                    reference_data['metadata']['gnina_cleaning'] = {
+                        'original_residues': clean_result['original_residues'],
+                        'cleaned_residues': clean_result['cleaned_residues'],
+                        'removed_count': clean_result['removed_count'],
+                        'cleaned_pdb': str(cleaned_pdb)
+                    }
+                    
+                    # Step 2: Extract ligand to SDF (or PDB)
+                    ligand_file = gnina_output_dir / f"{pdb_path.stem}_ligand.sdf"
+                    extract_result = extract_ligand_to_sdf(
+                        pdb_path=str(pdb_path),
+                        ligand_id=gnina_config['ligand_id'],
+                        output_sdf_path=str(ligand_file)
+                    )
+                    
+                    if not extract_result['success']:
+                        errors.append(f"GNINA ligand extraction error: {extract_result['error']}")
+                    else:
+                        # Step 3: Run GNINA with simple minimization
+                        output_file = gnina_output_dir / f"{pdb_path.stem}_ligand_minimized.sdf.gz"
+                        gnina_result = gnina_simple(
+                            receptor_pdb=str(cleaned_pdb),
+                            ligand_file=extract_result['output_path'],
+                            output_file=str(output_file),
+                            gnina_path=gnina_config['gnina_path']
+                        )
+                        
+                        if gnina_result['success']:
+                            reference_data['gnina_scores'] = {
+                                'cnn_score': gnina_result['cnn_score'],
+                                'cnn_affinity': gnina_result['cnn_affinity'],
+                                'vina_affinity': gnina_result['vina_affinity'],
+                                'vina_affinity_2': gnina_result['vina_affinity_2'],
+                                'output_file': str(output_file),
+                                'receptor_cleaned': str(cleaned_pdb),
+                                'ligand_extracted': extract_result['output_path'],
+                                'ligand_atoms': extract_result['ligand_atoms']
+                            }
+                        else:
+                            errors.append(f"GNINA scoring error: {gnina_result['error']}")
+        
         except Exception as e:
-            errors.append(f"GNINA scoring error: {str(e)}")
+            errors.append(f"GNINA execution error: {str(e)}")
     
     # ============ DSSP SECONDARY STRUCTURE ============
     if compute_dssp:
