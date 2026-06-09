@@ -1,6 +1,8 @@
-# RF Diffusion Binding Site Designer - Snakemake Pipeline
+# Allodesigner LP + Snakemake
+This folder contains the code for Allodesigner LP (strategy 1) in its snakemake implementation.
+## Contents of the folder
 
-## Overview
+## Pipeline description
 
 This Snakemake pipeline implements a binding site redesign workflow using RF Diffusion and LigandMPNN. The pipeline automates the process of:
 
@@ -242,76 +244,5 @@ output_dir/
   - `RF1`: RF Diffusion 1 (protein-only)
   - `RF3`: RF Diffusion 3 (next-gen model)
 
-## Workflow Notes
+### Running the pipeline on berzelius
 
-### Important Considerations
-
-1. **Ligand Position**: Ensure the input PDB has the original ligand in the binding pocket for active site detection
-2. **GPU Requirements**: RF Diffusion typically requires GPU acceleration (NVIDIA with CUDA)
-3. **Path Configuration**: Update all paths in config to match your system setup
-4. **Deterministic Mode**: Set `deterministic: true` for reproducible results
-5. **Design Number**: Each design is independently generated; increase `num_designs` for more options
-
-### Extending the Pipeline
-
-To add LigandMPNN integration after RF Diffusion:
-
-1. Uncomment the `generate_mpnn_jsons` and `run_ligand_mpnn` rules (at end of snakemake file)
-2. Implement the function calls using `func.generate_MPNN_jsons()` and `func.run_ligand_MPNN()`
-3. Update `rule all` to include MPNN outputs
-4. Add required MPNN parameters to config file
-
-## Troubleshooting
-
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| `FileNotFoundError: structure_path` | Check path in config file exists |
-| `ModuleNotFoundError: functions_bsd` | Ensure functions_bsd.py is in same directory |
-| `DSSP not found` | Install DSSP: `sudo apt install dssp` |
-| `PyMOL command failed` | Install PyMOL with conda: `conda install pymol` |
-| `RF Diffusion not found` | Update paths in config to correct locations |
-| `CUDA out of memory` | Reduce `num_designs` or run on GPU with more memory |
-
-### Debugging
-
-```bash
-# Run with debug output
-snakemake --snakefile rf_diffusion_bsd_snakemake.smk \
-  --configfile config_rfdiffusion_bsd.yml \
-  -c 1 --debug
-
-# Check log files in output directory
-tail -f outputs/rf_diffusion_bsd/RF_designs/*.log
-
-# Validate config syntax
-python -c "import yaml; print(yaml.safe_load(open('config_rfdiffusion_bsd.yml')))"
-```
-
-## References
-
-- **RF Diffusion**: https://github.com/RosettaCommons/RFdiffusion
-- **LigandMPNN**: https://github.com/ProteinMPNN/LigandMPNN
-- **Snakemake Documentation**: https://snakemake.readthedocs.io/
-- **Biopython**: https://biopython.org/
-
-## Citation
-
-If you use this pipeline, please cite:
-
-```
-RF Diffusion paper (insert citation)
-LigandMPNN paper (insert citation)
-Snakemake paper (if applicable)
-```
-
-## Contact & Support
-
-For issues, questions, or contributions, please contact:
-- Eduardo Amo González (original author of binding_site_designer.py)
-- [Your contact information]
-
----
-
-**Last Updated**: March 2026
