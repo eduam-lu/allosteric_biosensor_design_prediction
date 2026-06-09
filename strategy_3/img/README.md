@@ -1,1 +1,0 @@
-Images for strategy 3
