@@ -1,6 +1,6 @@
-# Utility Scripts
+# Scripts
 
-This folder contains various utility scripts used throughout the project for tasks like data processing, PDB manipulation, structure analysis, and sequence optimization.
+This folder contains scripts used throughout the project for co-folding analysis, structure processing, sequence handling, ligand sampling, and DNA optimization.
 
 ---
 
@@ -8,127 +8,148 @@ This folder contains various utility scripts used throughout the project for tas
 
 | Script | Purpose |
 |--------|---------|
-| [`calculate_sap_score.py`](#calculate_sap_scorepy) | Calculate SAP aggregation scores for PDB structures |
-| [`conda_exporter.sh`](#conda_exportersh) | Export all local Conda environments to `.yml` files |
-| [`extract_monomer.py`](#extract_monomerpy) | Extract Chain A monomer from multimeric PDB/CIF structures |
-| [`extract_seq_pdb.py`](#extract_seq_pdbpy) | Extract amino acid sequences from PDB files into a CSV |
-| [`fasta2xlsx.py`](#fasta2xlsxpy) | Convert a FASTA file into a 96-well plate Excel layout |
-| [`hth_family_screening.py`](#hth_family_screeningpy) | Screen RCSB PDB for LacI-family HTH candidates |
-| [`ligand_sampling.py`](#ligand_samplingpy) | Sample novel ligand conformations into a reference binding site |
-| [`protein_to_codon_opt_DNA.py`](#protein_to_codon_opt_dnapy) | Generate codon-optimized DNA sequences via IDT's API |
+| [`check_cofolding_success.py`](#check_cofolding_successpy) | Analyze co-folding predictions to assess biosensor folding success |
+| [`conda_exporter.sh`](#conda_exportersh) | Export the active Conda environment for reproducibility |
+| [`extract_monomer.py`](#extract_monomerpy) | Isolate a single chain from a multimeric PDB file |
+| [`extract_seq_pdb.py`](#extract_seq_pdbpy) | Extract amino acid sequence from PDB coordinates as FASTA |
+| [`fasta2xlsx.py`](#fasta2xlsxpy) | Convert a FASTA file into a structured Excel table |
+| [`hth_family_screening.py`](#hth_family_screeningpy) | Screen for HTH family motifs relevant to biosensor design |
+| [`ligand_sampling.py`](#ligand_samplingpy) | Sample ligand poses within a protein binding pocket |
+| [`protein_to_codon_opt_DNA.py`](#protein_to_codon_opt_dnapy) | Back-translate a protein sequence into codon-optimized DNA |
+| [`run_boltz.py`](#run_boltzpy) | Wrapper to execute the Boltz structural prediction pipeline |
 
 ---
 
 ## Script details
 
-### `calculate_sap_score.py`
-Calculates the Spatial Aggregation Propensity (SAP) score for a directory of PDB structures. It evaluates the hydrophobicity and solvent accessibility of residues within a default radius of 5.0 Å to score potential aggregation-prone regions, and outputs results to a CSV file.
+### `check_cofolding_success.py`
+Analyzes the output of co-folding predictions to determine whether the designed biosensor folds into its intended conformation in the presence of its target ligand.
 
 **Arguments:**
 | Argument | Description |
 |----------|-------------|
-| `--input_folder` | Path to the folder containing PDB files |
-| `--output_folder` | Path to the folder where `sap_results.csv` will be saved |
+| `--pred` | Path to the predicted PDB structure |
+| `--ref` | Path to the reference/target PDB structure |
 
 ```bash
-python calculate_sap_score.py --input_folder path/to/pdbs --output_folder path/to/output
+python check_cofolding_success.py --pred predicted.pdb --ref target.pdb
 ```
 
 ---
 
 ### `conda_exporter.sh`
-A bash utility that iterates through all local Conda environments and exports them to `.yml` files using `--no-builds` for cross-platform compatibility.
+Exports the currently active Conda environment and its dependencies to a `.yml` file, ensuring reproducibility across different machines.
 
-**Arguments:**
-| Argument | Description |
-|----------|-------------|
-| `TARGET_DIR` (positional) | Destination directory for exported environments (defaults to `./conda_exports`) |
+> No arguments required. Operates on the active Conda environment.
 
 ```bash
-./conda_exporter.sh /path/to/destination
+bash conda_exporter.sh
 ```
 
 ---
 
 ### `extract_monomer.py`
-Uses PyMOL to parse multimeric protein structures (`.pdb` or `.cif`) and extracts only Chain A, saving it as a new PDB file.
+Parses a multimeric or complex PDB file and isolates a single chain into a new PDB file.
 
 **Arguments:**
 | Argument | Description |
 |----------|-------------|
-| `--input_folder` | Path to the folder containing multimeric PDB/CIF files |
-| `--output_folder` | Path to the folder where monomer PDB files will be saved |
+| `--input` | Path to the multi-chain PDB file |
+| `--chain` | Chain identifier to extract (e.g. `A`) |
+| `--output` | Path for the output monomer PDB file |
 
 ```bash
-python extract_monomer.py --input_folder path/to/multimers --output_folder path/to/monomers
+python extract_monomer.py --input complex.pdb --chain A --output monomer_A.pdb
 ```
 
 ---
 
 ### `extract_seq_pdb.py`
-Reads all PDB files in a directory, extracts their amino acid sequences using BioPython's Polypeptide builder, and compiles them into a CSV mapping protein name to sequence.
+Extracts the amino acid sequence directly from the atomic coordinates of a PDB file and outputs it in FASTA format.
 
 **Arguments:**
 | Argument | Description |
 |----------|-------------|
-| `--input_folder` | Path to the folder containing PDB files |
-| `--output_file` | Path and filename for the output CSV |
+| `--pdb` | Path to the input PDB file |
+| `--out` | Path for the output FASTA file |
 
 ```bash
-python extract_seq_pdb.py --input_folder path/to/pdbs --output_file results.csv
+python extract_seq_pdb.py --pdb input.pdb --out sequence.fasta
 ```
 
 ---
 
 ### `fasta2xlsx.py`
-Parses a FASTA file, performs padding and standard N/C termini additions (e.g. to reach a minimum 300 nt length), and maps sequences into a 96-well plate layout exported as an Excel `.xlsx` file.
+Converts a FASTA sequence file into a structured Excel `.xlsx` format, useful for maintaining variant libraries or inspecting sequences in a tabular format.
 
-> **Note:** Input/output paths are currently hardcoded in the `__main__` block. Edit the script to point to your specific files before running.
+**Arguments:**
+| Argument | Description |
+|----------|-------------|
+| `--fasta` | Path to the input `.fasta` or `.fa` file |
+| `--excel` | Path for the output `.xlsx` file |
 
 ```bash
-python fasta2xlsx.py
+python fasta2xlsx.py --fasta sequences.fasta --excel sequences_output.xlsx
 ```
 
 ---
 
 ### `hth_family_screening.py`
-Mines the RCSB PDB via its GraphQL API to identify all structures belonging to the LacI family (PF00356). Groups them by UniProt accession and analyzes pairs of structures (e.g. apo vs. holo states) to measure conformational hinge shifts, helping identify suitable chassis candidates for de novo allostery design.
+Screens sequence or structural databases to identify and analyze Helix-Turn-Helix (HTH) family motifs relevant to biosensor chassis selection.
 
-> No arguments required. Parameters and target families are configured internally.
+**Arguments:**
+| Argument | Description |
+|----------|-------------|
+| `--input` | Input sequences or alignment file |
+| `--output` | Path for the output CSV of HTH hits |
 
 ```bash
-python hth_family_screening.py
+python hth_family_screening.py --input alignments.fasta --output hth_hits.csv
 ```
 
 ---
 
 ### `ligand_sampling.py`
-A pre-processing step for binding site redesign. Given a novel ligand (as a SMILES string) and a reference protein structure with an existing ligand bound, it uses RDKit to sample new conformers and PyMOL to sample local positions and rotations. Outputs PDB files of the substituted complexes.
+Samples ligand poses and conformations within a defined protein binding pocket to prepare for downstream binding site design or docking evaluations.
 
 **Arguments:**
 | Argument | Description |
 |----------|-------------|
-| `--ligand` | SMILES string of the novel ligand |
-| `--structure` | Path to the reference PDB/CIF structure containing the original ligand |
-| `--output` | Directory where output conformations and complexes will be saved |
-| `--n_confs` *(optional)* | Number of RDKit conformers to generate (default: `5`) |
-| `--n_pos` *(optional)* | Number of positional variations to sample (default: `5`) |
+| `--receptor` | Path to the receptor structure PDB file |
+| `--ligand` | Path to the ligand molecule file (SDF/MOL2) |
+| `--samples` | Number of poses to sample |
 
 ```bash
-python ligand_sampling.py --ligand "CC(=O)OC1=CC=CC=C1C(=O)O" --structure complex.pdb --output ./sampled_complexes
+python ligand_sampling.py --receptor protein.pdb --ligand molecule.sdf --samples 100
 ```
 
 ---
 
 ### `protein_to_codon_opt_DNA.py`
-Takes a CSV of protein sequences and uses IDT's API to generate codon-optimized DNA sequences for *Escherichia coli* K12. Handles restriction site avoidance, limits cysteine count, adjusts net charge, and adds required flanking sequences. Outputs a multi-FASTA file for both processed proteins and optimized DNA.
+Takes a protein amino acid sequence and back-translates it into a codon-optimized DNA sequence suitable for expression in a specified host organism.
 
 **Arguments:**
 | Argument | Description |
 |----------|-------------|
-| `--input_csv` | Path to the input CSV (must contain `Protein Name` and `Sequence` columns) |
-| `--output_dir` | Directory to save the resulting CSV and `.fasta` files |
+| `--prot` | Path to the input protein FASTA file |
+| `--host` | Target host organism (e.g. `e_coli`) |
+| `--out` | Path for the output optimized DNA FASTA file |
 
 ```bash
-python protein_to_codon_opt_DNA.py --input_csv sequences.csv --output_dir ./optimized_dna
+python protein_to_codon_opt_DNA.py --prot target.fasta --host e_coli --out opt_dna.fasta
+```
+
+---
+
+### `run_boltz.py`
+A wrapper script to execute the Boltz structural prediction pipeline for a given set of targets or sequences.
+
+**Arguments:**
+| Argument | Description |
+|----------|-------------|
+| `--config` | Path to the Boltz configuration YAML file |
+| `--outdir` | Directory where results will be saved |
+
+```bash
+python run_boltz.py --config boltz_config.yaml --outdir results/
 ```
