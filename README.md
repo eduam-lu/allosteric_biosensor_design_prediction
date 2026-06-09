@@ -1,4 +1,7 @@
 # Computational frameworks for de novo design of allosteric biosensors
+
+https://github.com/eduam-lu/allosteric_biosensor_design_prediction/tree/main
+
 ### Goals of the project
 Cells are able to detect and respond to molecules in their surroundings in several ways. One of them is ligand binding to allosteric transcription factors(TFs). These proteins can bind to a specific molecule, triggering a conformational change in the TF that allows it to either promote or repress the activity of a specific gene. This conformational change upon binding is known as allostery. (Figure 1)
 <img src="img/Figure_1_def.png" alt="Figure 1. Allosteric Tfs" style="max-width: 20%; height: auto; display: block; margin: 0 auto;">
