@@ -1,6 +1,8 @@
 # Strategy 1: Allosteric binding pocket redesign
 ## Strategy description
 
+## Contents of the folder 
+
 ## Pipeline description
 ### Generate redesign info
 First, the input structure is processed to gather information relevant to the execution of the pipeline and the evaluation of the results:
@@ -330,5 +332,4 @@ output/                                                    # Main trial director
   ├── MPNN_df.csv                                                # ProteinMPNN summary dataframe
   └── pdb_info.json                                              # Metadata and information about the PDBs
 ```
-### Requirements
 
