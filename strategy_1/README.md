@@ -1,5 +1,6 @@
 # Allodesigner LP: Allosteric binding pocket redesign
 <img src="pipeline1.png" alt="Allodesigner LP">
+
 ## Strategy description
 
 This strategy focuses on redesigning the allosteric binding pocket of a biosensor to accommodate a novel target ligand. Rather than relying on rigid docking, the pipeline employs a sequence of state-of-the-art structural and sequence generation models. It starts by sampling varying conformers and positions of the new ligand within the pocket. Then, it utilizes diffusion models (such as RFdiffusion, RFdiffusion All-Atom, or RF3) coupled with LigandMPNN to generate diverse pocket sequences capable of hosting the ligand. The generated sequences are subsequently filtered through an intensive cascade of structure prediction (ESMFold, AlphaFold3, Chai-1, and Boltz2) and docking models (GNINA) to ensure structural integrity, stability, and high-affinity ligand binding.
