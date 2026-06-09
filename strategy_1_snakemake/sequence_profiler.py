@@ -31,15 +31,16 @@ import biotite.structure.io as bsio
 ################################################################################
 
 # ============ INPUT/OUTPUT PATHS ============
-INPUT_PDB_PATH = "/home/eduardo/allostery/structures/2XPU.pdb"
-OUTPUT_JSON_PATH = "./2XPU_profile/reference_profile.json"
+INPUT_PDB_PATH = "/proj/berzelius-2023-361/users/x_eduam/2P9H.pdb"
+OUTPUT_JSON_PATH = "./2P9H_profile/reference_profile.json"
 
 # ============ DIRECTORY PATHS ============
 BOLTZ_RUNS_DIR = None                    # Set to directory path if Boltz results exist (e.g., ./boltz_output)
-GNINA_OUTPUT_DIR = "./2XPU_profile/gnina_output"
+GNINA_OUTPUT_DIR = "./2P9H_profile/gnina_output"
 
 # ============ PROTEIN STRUCTURE PARAMETERS ============
-CHAIN_ID = 'A'                           # Chain ID to extract from PDB
+CHAIN_ID = 'A'                            # Default chain ID belonging to the protein
+CHAINS_TO_KEEP = ['A']                      # List of chain IDs to keep (e.g., ['A', 'B']). If empty, all chains are kept.
 COMPUTE_DSSP = False                     # Compute secondary structure (requires DSSP installed)
 
 # ============ SEQUENCE PROFILE PARAMETERS ============
@@ -48,31 +49,31 @@ SAP_SEARCH_RADIUS = 5.0                  # Search radius in Ångströms for SAP 
 
 # ============ BOLTZ PARAMETERS ============
 BOLTZ_CONFIG = {
-    'enabled': False,                    # Set to True to run Boltz sampling
-    'ligand_id': None,                   # 3-letter PDB residue code for ligand (e.g., 'LIG', 'ATP')
-    'ligand_smiles': 'CCO',              # SMILES string for ligand
+    'enabled': True,                    # Set to True to run Boltz sampling
+    'ligand_id': 'IPT',                   # 3-letter PDB residue code for ligand (e.g., 'LIG', 'ATP')
+    'ligand_smiles': 'CC(C)S[C@@H]1O[C@H](CO)[C@H](O)[C@H](O)[C@H]1O',              # SMILES string for ligand
     'n_iterations': 5,                   # Number of Boltz iterations
     'use_msa': True,                     # Enable MSA in Boltz
-    'use_forces': True,                  # Use potentials in Boltz
-    'no_kernels': False,                 # Disable GPU kernels
+    'use_forces': False,                  # Use potentials in Boltz
+    'no_kernels': True,                 # Disable GPU kernels
     'devices': 1,                        # Number of devices to use
     'recycling_steps': 3,                # Recycling steps
     'sampling_steps': 100,               # Sampling steps for structure prediction
     'diffusion_samples': 1,              # Number of diffusion samples
     'output_format': 'pdb',              # Output format (pdb, mmcif, etc.)
     'sampling_steps_affinity': 100,      # Sampling steps for affinity prediction
-    'output_dir': './2XPU_profile/boltz_output',      # Output directory for Boltz runs
+    'output_dir': './2P9H_profile/boltz_output',      # Output directory for Boltz runs
     'max_dist': 5.0,                     # Max distance for pocket constraint
     'ligand_search_radius': 5.0,         # Radius to discover binding residues
-    'path_to_boltz_env': "/home/eduardo/miniforge3/envs/boltz",           # Path to Boltz conda env (e.g., /home/user/mambaforge/envs/boltz)
+    'path_to_boltz_env': "/proj/berzelius-2023-361/users/x_eduam/.conda/envs/boltz",           # Path to Boltz conda env (e.g., /home/user/mambaforge/envs/boltz)
 }
 
 # ============ GNINA PARAMETERS ============
 GNINA_CONFIG = {
-    'enabled': False,                    # Set to True to run GNINA scoring
-    'gnina_path': 'gnina',      # Path to GNINA executable
-    'ligand_id': 'LIG',                  # 3-letter PDB residue code for ligand
-    'output_folder': './2XPU_profile/gnina_output',   # Output directory for GNINA results
+    'enabled': True,                    # Set to True to run GNINA scoring
+    'gnina_path': '/proj/berzelius-2023-361/users/x_eduam/gnina/build/bin/gnina',      # Path to GNINA executable
+    'ligand_id': 'IPT',                  # 3-letter PDB residue code for ligand
+    'output_folder': './2P9H_profile/gnina_output',   # Output directory for GNINA results
 }
 
 ################################################################################
@@ -173,9 +174,49 @@ def get_chain_id(pdb_path):
 
 
 
-def extract_sequence(pdb_path, chain_id='A'):
+def filter_chains(structure, chains_to_keep=None):
+    """
+    Filter chains from a structure based on the specified list.
+    
+    Args:
+        structure: Biopython structure object
+        chains_to_keep (list, optional): List of chain IDs to keep (e.g., ['A', 'B']). 
+                                         If None or empty, returns all chains.
+    
+    Returns:
+        list: List of chain objects that match the filter criteria.
+    """
+    if not chains_to_keep:
+        # Return all chains
+        all_chains = []
+        for model in structure:
+            for chain in model:
+                all_chains.append(chain)
+        return all_chains
+    else:
+        # Return only specified chains
+        filtered_chains = []
+        chains_to_keep_set = set(c.upper() if isinstance(c, str) else c for c in chains_to_keep)
+        for model in structure:
+            for chain in model:
+                if chain.id.upper() in chains_to_keep_set or chain.id in chains_to_keep_set:
+                    filtered_chains.append(chain)
+        return filtered_chains
+
+
+
+def extract_sequence(pdb_path, chain_id='A', chains_to_keep=None):
     """
     Main wrapper to parse file (PDB or CIF) and combine info.
+    
+    Args:
+        pdb_path (str): Path to PDB/CIF file
+        chain_id (str): Default chain ID to use if chains_to_keep is None/empty
+        chains_to_keep (list, optional): List of chain IDs to include. If provided and non-empty, these chains
+                                         are concatenated. If None or empty, uses chain_id.
+    
+    Returns:
+        dict: Sequence information including coordinate_sequence, seqres, etc.
     """
     # 1. Select the correct parser
     if str(pdb_path).endswith('.cif'):
@@ -190,23 +231,43 @@ def extract_sequence(pdb_path, chain_id='A'):
     except Exception as e:
         return {"error": f"Structure Parsing Error: {str(e)}"}
 
+    # Determine which chains to process
+    if chains_to_keep and len(chains_to_keep) > 0:
+        # Use chains_to_keep
+        chains_to_process = filter_chains(structure, chains_to_keep)
+        if not chains_to_process:
+            return {"error": f"No chains found matching: {chains_to_keep}"}
+    else:
+        # Use single chain_id (legacy behavior)
+        try:
+            chains_to_process = [structure[0][chain_id]]
+        except KeyError:
+            return {"error": f"Chain {chain_id} not found in structure"}
+
     # 2. Get SEQRES sequence
-    # Note: Ensure your 'get_seqres_sequence' helper can handle CIF structures.
-    # CIF files often don't populate structure.header['seqres']. 
+    seqres_list = []
     try:
-        seqres = get_seqres_sequence(structure, chain_id)
+        for chain in chains_to_process:
+            seqres = get_seqres_sequence(structure, chain.id, pdb_path)
+            if seqres:
+                seqres_list.append(seqres)
     except Exception:
-        seqres = None
+        pass
+
+    seqres = ''.join(seqres_list) if seqres_list else None
 
     # 3. Get Coordinate Sequence
-    # MMCIFParser usually uses auth_id (e.g. 'A') by default, so this matches PDB behavior.
+    coord_seq_list = []
+    res_count_total = 0
     try:
-        if chain_id in structure[0]:
-            coord_seq, res_count = get_coordinate_sequence(structure[0][chain_id])
-        else:
-            coord_seq, res_count = ("", 0)
-    except KeyError:
-         return {"error": f"Chain {chain_id} not found in structure"}
+        for chain in chains_to_process:
+            coord_seq, res_count = get_coordinate_sequence(chain)
+            coord_seq_list.append(coord_seq)
+            res_count_total += res_count
+    except Exception as e:
+        return {"error": f"Error extracting coordinate sequence: {str(e)}"}
+
+    coord_seq = ''.join(coord_seq_list)
 
     # 4. Fallback Logic
     if not seqres:
@@ -228,6 +289,8 @@ def extract_sequence(pdb_path, chain_id='A'):
     else:
         start_residue_number = None 
 
+    chains_processed = [c.id for c in chains_to_process]
+
     return {
         "pdb_id": os.path.basename(pdb_path).split('.')[0],
         "seqres": seqres,
@@ -237,20 +300,69 @@ def extract_sequence(pdb_path, chain_id='A'):
         "missing_residues": missing_residues,
         "missing_positions": missing_positions,
         "start_residue_number": start_residue_number,
-        "sequence_length": len(coord_seq)
+        "sequence_length": len(coord_seq),
+        "chains_processed": chains_processed
     }
 
 
-def get_seqres_sequence(structure, chain_id='A'):
+def get_seqres_sequence(structure, chain_id='A', pdb_path=None):
     """
     Retrieves the SEQRES sequence from the PDB header.
+    Converts 3-letter amino acid codes to 1-letter codes.
     Returns None if not found.
     """
+    # First try Biopython's parsed header
     if 'seqres' in structure.header:
         seqres_dict = structure.header['seqres']
         if chain_id in seqres_dict:
-            # Biopython stores this as a sequence string
-            return str(seqres_dict[chain_id])
+            seqres_data = seqres_dict[chain_id]
+
+            # Biopython stores SEQRES as a list of 3-letter residue codes
+            if isinstance(seqres_data, list):
+                seqres_list = seqres_data
+            else:
+                # If it's already a string, convert it to a list
+                seqres_list = str(seqres_data).split()
+
+            # Convert 3-letter codes to 1-letter codes
+            one_letter_seq = []
+            for res_code in seqres_list:
+                res_code = res_code.strip()
+                one_letter = AA_3TO1.get(res_code, 'X')  # 'X' for unknown residues
+                one_letter_seq.append(one_letter)
+
+            return ''.join(one_letter_seq)
+
+    # Fallback: Parse SEQRES lines directly from PDB file
+    # This handles cases where Biopython doesn't populate the header correctly
+    if pdb_path:
+        try:
+            seqres_sequences = {}
+            with open(pdb_path, 'r') as f:
+                for line in f:
+                    if line.startswith('SEQRES'):
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            chain = parts[2]
+                            residues = parts[4:]  # Residue codes start from index 4
+                            if chain not in seqres_sequences:
+                                seqres_sequences[chain] = []
+                            seqres_sequences[chain].extend(residues)
+
+            if chain_id in seqres_sequences:
+                seqres_list = seqres_sequences[chain_id]
+
+                # Convert 3-letter codes to 1-letter codes
+                one_letter_seq = []
+                for res_code in seqres_list:
+                    res_code = res_code.strip()
+                    one_letter = AA_3TO1.get(res_code, 'X')  # 'X' for unknown residues
+                    one_letter_seq.append(one_letter)
+
+                return ''.join(one_letter_seq)
+        except Exception as e:
+            pass
+
     return None
 
 
@@ -553,29 +665,48 @@ def DSSP_profile(input_file):
 
 def extract_perresidue_plddt(file_path):
     """
-    Extracts the mean and standard deviation of pLDDT scores 
-    from a structure file using Biotite.
+    Extracts per-residue (per-position) pLDDT scores from a PDB file.
+    
+    In PDB files, B-factors are stored per-atom. This function extracts the 
+    CA (alpha carbon) B-factor for each residue, which represents the pLDDT
+    confidence score for that residue position.
+    
+    Returns:
+        list[float]: List of pLDDT scores, one per residue position.
     """
+    parser = PDBParser(QUIET=True)
+    
     try:
-        # FIX: Explicitly ask for 'b_factor' using extra_fields
-        struct = bsio.load_structure(file_path, extra_fields=["b_factor"])
-        
-        # Check if b_factor data was successfully loaded
-        if not hasattr(struct, "b_factor"):
-            # Fallback: Sometimes PDB parsers attach it to 'occupancy' by mistake 
-            # if columns are misaligned, but usually it's just missing from the load.
-            print(f"Warning: 'b_factor' column could not be loaded from {file_path}")
-            return 0.0, 0.0
-            
-        # Extract the array of pLDDT scores
-        plddt_values = struct.b_factor
-        
-        # Return Mean and Stdev
-        return [i for i in plddt_values]
-
+        structure = parser.get_structure('struct', file_path)
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
-        return 0.0, 0.0
+        print(f"Error parsing PDB {file_path}: {e}")
+        return []
+    
+    plddt_values = []
+    
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                # Skip non-standard residues (waters, ligands, etc.)
+                if not PDB.is_aa(residue):
+                    continue
+                
+                # Extract CA (alpha carbon) B-factor for this residue
+                if 'CA' in residue:
+                    ca_atom = residue['CA']
+                    b_factor = ca_atom.get_bfactor()
+                    plddt_values.append(float(b_factor))
+                else:
+                    # If CA is missing, try to use average of all atoms
+                    atom_bfactors = []
+                    for atom in residue:
+                        atom_bfactors.append(atom.get_bfactor())
+                    
+                    if atom_bfactors:
+                        avg_bfactor = np.mean(atom_bfactors)
+                        plddt_values.append(float(avg_bfactor))
+    
+    return plddt_values
 
 def sequence_profiler(sequence, pdb_path=None, window_size=9, sap_radius=SAP_RADIUS_DEFAULT):
     """
@@ -1015,7 +1146,7 @@ def clean_pdb(pdb_path, output_path, keep_ligand_id=None, remove_water=True):
 
 def extract_ligand_to_sdf(pdb_path, ligand_id, output_sdf_path):
     """
-    Extract a ligand from a PDB file and save as SDF, preserving 3D coordinates.
+    Extract ONLY the ligand residue from a PDB file and save as SDF, preserving 3D coordinates.
     
     Args:
         pdb_path (str): Path to input PDB file.
@@ -1030,22 +1161,71 @@ def extract_ligand_to_sdf(pdb_path, ligand_id, output_sdf_path):
             'error': str | None
         }
     """
+    # Step 1: Use Biopython to extract ONLY the ligand residues
+    parser = PDBParser(QUIET=True)
+    
     try:
-        # Use RDKit to read PDB and extract ligand
+        structure = parser.get_structure('struct', pdb_path)
+    except Exception as e:
+        return {
+            'success': False,
+            'output_path': None,
+            'ligand_atoms': 0,
+            'error': f"Error parsing PDB: {str(e)}"
+        }
+    
+    ligand_atoms = []
+    ligand_residues = []
+    
+    # Extract only residues matching the ligand_id
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                if residue.get_resname().strip() == ligand_id:
+                    ligand_residues.append(residue)
+                    ligand_atoms.extend(residue.get_atoms())
+    
+    if not ligand_atoms:
+        return {
+            'success': False,
+            'output_path': None,
+            'ligand_atoms': 0,
+            'error': f"Ligand '{ligand_id}' not found in PDB"
+        }
+    
+    # Step 2: Write ligand-only structure to a temporary PDB
+    try:
+        temp_pdb = Path(output_sdf_path).parent / f"{Path(output_sdf_path).stem}_ligand_temp.pdb"
+        new_structure = PDB.Structure.Structure('ligand')
+        new_model = PDB.Model.Model(0)
+        new_chain = PDB.Chain.Chain('L')
+        
+        for residue in ligand_residues:
+            new_chain.add(residue.copy())
+        
+        new_model.add(new_chain)
+        new_structure.add(new_model)
+        
+        io = PDB.PDBIO()
+        io.set_structure(new_structure)
+        io.save(str(temp_pdb))
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'output_path': None,
+            'ligand_atoms': 0,
+            'error': f"Error writing temporary PDB: {str(e)}"
+        }
+    
+    # Step 3: Try to convert to SDF using RDKit
+    try:
         from rdkit import Chem
-        from rdkit.Chem import AllChem
         
-        # Read the PDB file
-        mol = Chem.MolFromPDBFile(str(pdb_path))
+        mol = Chem.MolFromPDBFile(str(temp_pdb))
         if mol is None:
-            return {
-                'success': False,
-                'output_path': None,
-                'ligand_atoms': 0,
-                'error': f"RDKit could not parse PDB: {pdb_path}"
-            }
+            raise Exception("RDKit could not parse ligand PDB")
         
-        # Write all atoms to SDF (RDKit preserves 3D coordinates from PDB)
         output_file = Path(output_sdf_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
@@ -1053,98 +1233,35 @@ def extract_ligand_to_sdf(pdb_path, ligand_id, output_sdf_path):
         writer.write(mol)
         writer.close()
         
+        # Clean up temporary PDB
+        temp_pdb.unlink()
+        
         return {
             'success': True,
             'output_path': str(output_file),
-            'ligand_atoms': mol.GetNumAtoms(),
+            'ligand_atoms': len(ligand_atoms),
             'error': None
         }
     
-    except ImportError:
-        # Fallback: Use Biopython to extract ligand atoms
-        parser = PDBParser(QUIET=True)
-        
+    except Exception as e:
+        # Fallback: Output as PDB if SDF conversion fails
         try:
-            structure = parser.get_structure('struct', pdb_path)
-        except Exception as e:
-            return {
-                'success': False,
-                'output_path': None,
-                'ligand_atoms': 0,
-                'error': f"Error parsing PDB: {str(e)}"
-            }
-        
-        ligand_atoms = []
-        ligand_residues = []
-        
-        for model in structure:
-            for chain in model:
-                for residue in chain:
-                    if residue.get_resname().strip() == ligand_id:
-                        ligand_residues.append(residue)
-                        ligand_atoms.extend(residue.get_atoms())
-        
-        if not ligand_atoms:
-            return {
-                'success': False,
-                'output_path': None,
-                'ligand_atoms': 0,
-                'error': f"Ligand '{ligand_id}' not found in PDB"
-            }
-        
-        # Write ligand structure to PDB first, then convert
-        try:
-            # Create a temporary structure with just the ligand
-            new_structure = PDB.Structure.Structure('ligand')
-            new_model = PDB.Model.Model(0)
-            new_chain = PDB.Chain.Chain('L')
-            
-            for residue in ligand_residues:
-                new_chain.add(residue.copy())
-            
-            new_model.add(new_chain)
-            new_structure.add(new_model)
-            
-            # Write to PDB first
-            temp_pdb = Path(output_sdf_path).parent / f"{Path(output_sdf_path).stem}_temp.pdb"
-            io = PDB.PDBIO()
-            io.set_structure(new_structure)
-            io.save(str(temp_pdb))
-            
-            # Try to convert PDB to SDF using rdkit
-            try:
-                mol = Chem.MolFromPDBFile(str(temp_pdb))
-                if mol:
-                    output_file = Path(output_sdf_path)
-                    output_file.parent.mkdir(parents=True, exist_ok=True)
-                    writer = Chem.SDWriter(str(output_file))
-                    writer.write(mol)
-                    writer.close()
-                    temp_pdb.unlink()
-                    return {
-                        'success': True,
-                        'output_path': str(output_file),
-                        'ligand_atoms': mol.GetNumAtoms(),
-                        'error': None
-                    }
-            except:
-                pass
-            
-            # Fallback: just use the PDB as output (user can convert later)
             output_file = Path(output_sdf_path).parent / f"{Path(output_sdf_path).stem}.pdb"
+            # Move temp PDB to final output location
+            temp_pdb.rename(output_file)
+            
             return {
                 'success': True,
                 'output_path': str(output_file),
                 'ligand_atoms': len(ligand_atoms),
-                'error': 'RDKit not available; saved as PDB instead of SDF'
+                'error': f'RDKit conversion failed; saved as PDB instead of SDF: {str(e)}'
             }
-        
-        except Exception as e:
+        except Exception as e2:
             return {
                 'success': False,
                 'output_path': None,
-                'ligand_atoms': 0,
-                'error': f"Error extracting ligand: {str(e)}"
+                'ligand_atoms': len(ligand_atoms),
+                'error': f"Error converting to SDF or saving PDB: {str(e2)}"
             }
 
 
@@ -1350,7 +1467,8 @@ def generate_reference_profile_json(pdb_path=None,
                                    compute_dssp=None,
                                    window_size=None,
                                    sap_radius=None,
-                                   chain_id=None):
+                                   chain_id=None,
+                                   chains_to_keep=None):
     """
     Orchestrate extraction of all reference profiles and metrics into a comprehensive JSON.
     
@@ -1381,7 +1499,10 @@ def generate_reference_profile_json(pdb_path=None,
         compute_dssp (bool): Whether to compute DSSP secondary structure.
         window_size (int): Window size for sequence profiles.
         sap_radius (float): Radius for SAP profile computation.
-        chain_id (str): Chain ID to extract (default 'A').
+        chain_id (str): Chain ID to extract (default 'A'). Deprecated, use chains_to_keep instead.
+        chains_to_keep (list, optional): List of chain IDs to keep (e.g., ['A', 'B']). 
+                                        If None or empty, uses chain_id. If provided, these chains 
+                                        are concatenated into a single sequence. Defaults to CHAINS_TO_KEEP.
     
     Returns:
         dict: Comprehensive reference profile dictionary with structure:
@@ -1412,12 +1533,15 @@ def generate_reference_profile_json(pdb_path=None,
         sap_radius = SAP_SEARCH_RADIUS
     if chain_id is None:
         chain_id = CHAIN_ID
+    if chains_to_keep is None:
+        chains_to_keep = CHAINS_TO_KEEP
     
     errors = []
     reference_data = {
         'metadata': {
             'pdb_path': str(pdb_path),
             'chain_id': chain_id,
+            'chains_to_keep': chains_to_keep if chains_to_keep else "all",
             'extraction_timestamp': datetime.now().isoformat(),
             'window_size': window_size,
             'sap_radius': sap_radius
@@ -1438,7 +1562,7 @@ def generate_reference_profile_json(pdb_path=None,
     
     # ============ SEQUENCE EXTRACTION ============
     try:
-        seq_info = extract_sequence(str(pdb_path), chain_id=chain_id)
+        seq_info = extract_sequence(str(pdb_path), chain_id=chain_id, chains_to_keep=chains_to_keep)
         if 'error' in seq_info:
             errors.append(f"Sequence extraction error: {seq_info['error']}")
         else:
@@ -1473,7 +1597,7 @@ def generate_reference_profile_json(pdb_path=None,
         try:
             # Prepare row data for Boltz sampling
             if reference_data['sequence_info'] and 'coordinate_sequence' in reference_data['sequence_info']:
-                sequence = reference_data['sequence_info']['coordinate_sequence']
+                sequence = reference_data['sequence_info']['seqres']
                 pdb_id = reference_data['sequence_info'].get('pdb_id', 'protein')
                 
                 # Auto-discover binding residues for pocket constraint
@@ -1522,10 +1646,10 @@ def generate_reference_profile_json(pdb_path=None,
                     sampling_steps_affinity=BOLTZ_CONFIG.get('sampling_steps_affinity', 100)
                 )
                 
-                # Process Boltz output
+                # Process Boltz output - aggregate across all iterations
                 if boltz_result['run_folders']:
-                    latest_folder = boltz_result['run_folders'][-1]  # Last iteration
-                    boltz_metrics = process_boltz_output(str(latest_folder))
+                    root_boltz_dir = Path(boltz_output_dir)
+                    boltz_metrics = process_boltz_output(str(root_boltz_dir), pdb_search_path=str(root_boltz_dir))
                     reference_data['boltz_metrics'] = {
                         'avg_confidence_score': boltz_metrics.get('avg_confidence_score'),
                         'avg_affinity_pred_value': boltz_metrics.get('avg_affinity_pred_value'),
@@ -1534,7 +1658,7 @@ def generate_reference_profile_json(pdb_path=None,
                         'num_confidence_files': boltz_metrics.get('num_confidence_files', 0),
                         'num_affinity_files': boltz_metrics.get('num_affinity_files', 0),
                         'num_pdbs': boltz_metrics.get('num_pdbs', 0),
-                        'source_directory': str(latest_folder),
+                        'source_directory': str(root_boltz_dir),
                         'run_folders': boltz_result['run_folders']
                     }
             else:
@@ -1603,10 +1727,30 @@ def generate_reference_profile_json(pdb_path=None,
                     if not extract_result['success']:
                         errors.append(f"GNINA ligand extraction error: {extract_result['error']}")
                     else:
-                        # Step 3: Run GNINA with simple minimization
+                        # Step 3: Remove ligand from the cleaned PDB (keep only protein)
+                        receptor_only_pdb = gnina_output_dir / f"{pdb_path.stem}_receptor_only.pdb"
+                        receptor_clean_result = clean_pdb(
+                            pdb_path=str(cleaned_pdb),
+                            output_path=str(receptor_only_pdb),
+                            keep_ligand_id=None,  # Remove all non-protein residues
+                            remove_water=True
+                        )
+                        
+                        if not receptor_clean_result['success']:
+                            errors.append(f"GNINA receptor-only PDB creation error: {receptor_clean_result['error']}")
+                            # Fallback: use cleaned_pdb with ligand still in it
+                            receptor_pdb_to_use = str(cleaned_pdb)
+                        else:
+                            receptor_pdb_to_use = str(receptor_only_pdb)
+                            reference_data['metadata']['gnina_receptor_only'] = {
+                                'output_path': str(receptor_only_pdb),
+                                'residues_count': receptor_clean_result['cleaned_residues']
+                            }
+                        
+                        # Step 4: Run GNINA with simple minimization
                         output_file = gnina_output_dir / f"{pdb_path.stem}_ligand_minimized.sdf.gz"
                         gnina_result = gnina_simple(
-                            receptor_pdb=str(cleaned_pdb),
+                            receptor_pdb=receptor_pdb_to_use,
                             ligand_file=extract_result['output_path'],
                             output_file=str(output_file),
                             gnina_path=gnina_config['gnina_path']
@@ -1619,7 +1763,7 @@ def generate_reference_profile_json(pdb_path=None,
                                 'vina_affinity': gnina_result['vina_affinity'],
                                 'vina_affinity_2': gnina_result['vina_affinity_2'],
                                 'output_file': str(output_file),
-                                'receptor_cleaned': str(cleaned_pdb),
+                                'receptor_pdb': receptor_pdb_to_use,
                                 'ligand_extracted': extract_result['output_path'],
                                 'ligand_atoms': extract_result['ligand_atoms']
                             }
@@ -1640,6 +1784,7 @@ def generate_reference_profile_json(pdb_path=None,
         except Exception as e:
             errors.append(f"DSSP computation error: {str(e)}")
     
+    
     # ============ FINALIZE ============
     reference_data['errors'] = errors
     
@@ -1649,8 +1794,38 @@ def generate_reference_profile_json(pdb_path=None,
             output_file = Path(output_json_path)
             output_file.parent.mkdir(parents=True, exist_ok=True)
             
+            # Helper function to format JSON with pretty-printed objects but compact arrays
+            def json_with_compact_arrays(obj, indent=2):
+                """
+                Serialize to JSON with pretty-printed objects but compact arrays (one line per array).
+                """
+                def _format(obj, level=0):
+                    if isinstance(obj, dict):
+                        if not obj:
+                            return '{}'
+                        current_indent = ' ' * (level * indent)
+                        next_indent = ' ' * ((level + 1) * indent)
+                        
+                        items = []
+                        for k, v in obj.items():
+                            formatted_v = _format(v, level + 1)
+                            items.append(f'{next_indent}"{k}": {formatted_v}')
+                        
+                        return '{\n' + ',\n'.join(items) + '\n' + current_indent + '}'
+                    
+                    elif isinstance(obj, list):
+                        # Compact format for arrays - all on one line
+                        return json.dumps(obj, default=str)
+                    
+                    else:
+                        return json.dumps(obj, default=str)
+                
+                return _format(obj, level=0)
+            
+            # Format and save the reference data
+            formatted_json = json_with_compact_arrays(reference_data)
             with open(output_file, 'w') as f:
-                json.dump(reference_data, f, indent=2, default=str)
+                f.write(formatted_json)
             
             print(f"Reference profile JSON saved to: {output_file}")
         except Exception as e:

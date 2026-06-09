@@ -42,6 +42,8 @@ conformers = config.get("num_conformers", 5)
 # - first_shell_only: If true, only residues in the first shell will be redesigned by Ligand MPNN
 # - user_defined_mpnn_redesign: If provided, this list of residues will be used as the redesign list for Ligand MPNN
 # - top_n_mpnn_candidates: Number of top MPNN sequence designs to keep and evaluate
+
+region = config.get('region', [0,54]) # e.g. [0, 54] for residues 0 to 54, or None for no region restriction
 path_to_ligand_MPNN_script = config.get('path_to_ligand_MPNN_script')
 path_to_ligand_MPNN_env = config.get('path_to_ligand_MPNN_env')
 mpnn_model_type = config.get('mpnn_model_type', "ligand_mpnn")
@@ -255,7 +257,7 @@ rule generate_mpnn_jsons:
             redesigned_residues_dict[str(pdb_file)] = func.generate_redesign_string(
                 deNovo_path=pdb_file, 
                 reference_path=structure_path, 
-                region=[0,54], 
+                region=region, 
                 chain_id='A',
                 search_radius=redesign_search_radius,
                 rmsd_threshold=redesign_rmsd_threshold

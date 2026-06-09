@@ -1,0 +1,155 @@
+# RF Diffusion BSD - Parameters Reference
+
+Format for each line:
+-parameter name: X,Y, brief description of what the parameter does
+
+Basic parameters
+-structure_path: X,Y, Path to the input structure file (PDB/CIF) used by the pipeline.
+-chain_id: X,Y, Chain identifier to keep; if None the first protein chain is used.
+-ligand_resname: X,Y, Residue name(s) of ligand(s) to retain during PDB cleaning.
+-ligand_name: X,Y, Short name used for ligand outputs and labeling.
+-ligand_smiles: X,Y, SMILES string used for ligand sampling and conformer generation.
+-output_dir: X,Y, Root output directory for all pipeline artifacts.
+
+Ligand sampling parameters
+-num_conformers: X,Y, Number of conformers to generate per ligand position.
+-num_positions: X,Y, Number of ligand placement positions to sample in the pocket.
+-conformer_rmsd_cutoff: X,Y, RMSD threshold to filter similar conformers.
+-rotation: X,Y, Max rotation (degrees) applied when sampling ligand poses.
+-translation: X,Y, Max translation (Å) applied when sampling ligand poses.
+
+Active site definition parameters
+-first_shell_distance: X,Y, Distance (Å) defining the first-shell active site around ligand.
+-second_shell_distance: X,Y, Distance (Å) defining the second-shell (if used).
+-include_second_shell: X,Y, Boolean flag to include second-shell residues in active site.
+-user_defined_active_site: X,Y, User-provided active site specification (overrides auto-detection).
+-user_defined_residues: X,Y, Explicit list of residues to treat as active-site (if provided).
+
+Redesign conditions parameters
+-ligand_MPNN_only: X,Y, If true, skip RF diffusion and run only LigandMPNN redesigns.
+-RF_folder: X,Y, Path to an RF-related folder or resources (model-specific use).
+-RF_model: X,Y, Which RF model to run: e.g., 'all_atom', 'RF1', or 'RF3'.
+-conservative_redesign: X,Y, If true, apply conservative redesign constraints to preserve structure.
+-segment_extension: X,Y, Number of residues to extend on each redesign segment.
+-n_termini_extension: X,Y, Number of residues to extend at N-terminus of redesign segments.
+-c_termini_extension: X,Y, Number of residues to extend at C-terminus of redesign segments.
+-user_defined_contig_map: X,Y, User-specified contig/segment map for redesign regions.
+
+RF diffusion execution parameters
+-path_to_RFAA_apptainer: X,Y, Path to the RFAA apptainer image (all-atom RF) if used.
+-path_to_RFAA_script: X,Y, Script/entrypoint for running RFAA (all-atom) inference.
+-path_to_RFAA_weights: X,Y, Weights file or checkpoint for RFAA model.
+-path_to_RF1_script: X,Y, Script to run RF1-based diffusion inference.
+-path_to_RF1_env: X,Y, Environment (conda, venv, etc.) or wrapper for RF1 execution.
+-num_designs: X,Y, Number of designs to generate per conformer/seed.
+-T: X,Y, Number of diffusion steps or timesteps (model-specific meaning).
+-RFAA_ligand_name: X,Y, Ligand name used by RFAA for inference (e.g., 'UNL').
+-design_startnum: X,Y, Starting index/offset for numbering generated designs.
+-deterministic: X,Y, Boolean to enable deterministic runs (seeded) when supported.
+
+RF3-specific parameters
+-path_to_RF3_env: X,Y, Environment or wrapper used to run RF3 inference.
+-RF3_batch_size: X,Y, Batch size passed to RF3 during inference.
+-RF3_num_batches: X,Y, Number of batches to produce (controls total designs).
+-RF3_num_timesteps: X,Y, Timesteps used by RF3 diffusion process.
+-RF3_step_scale: X,Y, Step scaling factor for RF3 sampler.
+-RF3_noise_scale: X,Y, Noise scaling parameter for RF3 sampling.
+-RF3_gamma_0: X,Y, Initial gamma parameter for RF3 scheduler.
+-RF3_gamma_min: X,Y, Minimum gamma parameter for RF3 scheduler.
+-RF3_cfg_scale: X,Y, Classifier-free guidance scale used by RF3 (if applicable).
+-RF3_use_classifier_free_guidance: X,Y, Boolean to toggle classifier-free guidance in RF3.
+-RF3_dump_trajectories: X,Y, If true, save intermediate trajectories from RF3 runs.
+-RF3_prevalidate_inputs: X,Y, If true, pre-validate RF3 inputs before running inference.
+-RF3_low_memory_mode: X,Y, Toggle low-memory mode for RF3 to reduce peak usage.
+-RF3_checkpoint_path: X,Y, Path or name of RF3 checkpoint directory.
+
+BSD_def pipeline parameters
+
+Basic execution and IO
+-GPUS: X,Y, Number of GPUs to use for parallel stages (used to shard work).
+-SPLIT_IDS: X,Y, List of split identifiers derived from GPU count for parallel splits.
+-OUTPUT_DIR: X,Y, Root output directory for the BSD pipeline.
+-RF_PDB_DIR: X,Y, Directory containing RF-generated PDB/CIF files used as inputs.
+-RF_DESIGNS: X,Y, Wildcard list of RF design identifiers discovered under `RF_PDB_DIR`.
+
+Input and ligand parameters
+-structure_path: X,Y, Path to the reference structure used for comparisons and redesign.
+-ligand_smiles: X,Y, SMILES string used for ligand sampling.
+-conformers: X,Y, Number of conformers to sample when preparing the ligand.
+
+Ligand MPNN parameters
+-path_to_ligand_MPNN_script: X,Y, Path to the LigandMPNN execution script.
+-path_to_ligand_MPNN_env: X,Y, Environment (conda/env path) to run LigandMPNN.
+-mpnn_model_type: X,Y, Model type for LigandMPNN (e.g., 'ligand_mpnn' or 'base').
+-path_to_mpnn_model: X,Y, Path to the LigandMPNN model weights/checkpoint.
+-MPNN_num_designs: X,Y, Number of sequence designs to generate per input in MPNN.
+-n_batches: X,Y, Number of batches to split MPNN work into.
+-mpnn_temperature: X,Y, Sampling temperature used by LigandMPNN.
+-bias_aa_global: X,Y, Global amino-acid bias to apply during MPNN sampling.
+-omit_aa_global: X,Y, Comma-separated amino acids to omit globally during MPNN sampling.
+-side_chain_context: X,Y, Toggle (0/1) for using side-chain context in MPNN designs.
+-first_shell_only: X,Y, If true, only first-shell residues are redesigned by MPNN.
+-user_defined_mpnn_redesign: X,Y, User-provided residue list for MPNN redesign targets.
+-top_n_mpnn_candidates: X,Y, Number of top MPNN candidates to retain for downstream steps.
+
+Region / redesign helpers
+-region: X,Y, Sequence region (start,end) to restrict redesign; None for full-length.
+-redesign_search_radius: X,Y, Search radius (Å) for finding structurally matching residues.
+-redesign_rmsd_threshold: X,Y, RMSD (Å) threshold for structural matches in redesign search.
+
+ESMfold parameters
+-path_to_ESM_env: X,Y, Environment to run ESMfold predictions.
+-path_to_ESM_script: X,Y, Script to run ESM high-throughput folding.
+-path_to_ESM_image: X,Y, Apptainer/Singularity image for ESMfold if used.
+
+1D filtering
+-filter_1d_window_size: X,Y, Sliding window size for 1D repeat detection.
+-filter_1d_treshold: X,Y, Repeat threshold to filter sequences (per-window count).
+
+3D filtering & scoring
+-clash_distance: X,Y, Atom distance (Å) considered a clash.
+-bond_distance: X,Y, Atom distance (Å) considered bonded.
+-MIN_PLDDT_1: X,Y, Minimum mean pLDDT score to pass the first 3D filter.
+-MIN_RMSD_1: X,Y, Minimum RMSD to ensure sufficient structural divergence.
+-MAX_RMSD_1: X,Y, Maximum RMSD allowed to preserve global fold.
+-MAX_CLASHES_1: X,Y, Maximum allowable clashes per atom after folding.
+-global_score_weights: X,Y, Weights dict used to compute composite ranking scores.
+-top_n_score_ESM: X,Y, Number of top ESM-scored designs to keep.
+-top_n_gnina_ESM: X,Y, Number of top GNINA-scored designs to keep after ESM.
+
+GNINA / docking
+-gnina_path: X,Y, Command or path to the `gnina` executable.
+-gnina_cnn: X,Y, CNN scoring model name to use with GNINA.
+-gnina_exhaustiveness: X,Y, Exhaustiveness parameter for docking search.
+-gnina_autobox_add: X,Y, Padding (Å) added around ligand when auto-boxing for docking.
+-gnina_box_size: X,Y, Size of the docking box to use for GNINA.
+
+Second prediction round
+-model_flag: X,Y, Which prediction model to run in second round (e.g., 'CHAI','AF3').
+-msa_flag: X,Y, Whether to use MSAs during the second prediction round.
+-templates_flag: X,Y, Whether to use templates during prediction (under development).
+
+Boltz parameters
+-max_dist: X,Y, Maximum pairing distance used by Boltz prediction.
+-use_msa_boltz: X,Y, Whether to include MSAs in Boltz runs.
+-use_forces: X,Y, Whether to enable physical forces in Boltz sampling.
+-no_kernels: X,Y, Flag to disable custom kernels in Boltz.
+-path_to_boltz_env: X,Y, Environment path required to run Boltz.
+-devices: X,Y, Number of GPU devices to allocate to Boltz jobs.
+-recycling_steps: X,Y, Number of recycling iterations during structure prediction.
+-sampling_steps: X,Y, Number of sampling steps for Boltz prediction.
+-diffusion_samples: X,Y, Number of diffusion samples to generate per job.
+-output_format: X,Y, Output format for Boltz structures ('pdb', 'cif', etc.).
+-sampling_steps_affinity: X,Y, Sampling steps used for affinity-specific calculations.
+-binding_pocket: X,Y, Explicit list of residues defining the binding pocket (if set).
+-site_residues_check_cofold: X,Y, Default residue list used for GNINA/cofold pocket checks.
+
+Final filtering
+-top_n_score_final: X,Y, Number of final designs kept after structural scoring.
+-top_n_gnina_final: X,Y, Number of final designs kept after GNINA filtering.
+
+GPU locking
+-GPU_LOCK_DIR: X,Y, Directory used for creating GPU lock files when pinning devices.
+
+End of file
+
