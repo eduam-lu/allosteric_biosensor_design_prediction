@@ -1,5 +1,5 @@
 # Allodesigner EP
-
+<img src="pipeline2.png" alt="Allodesigner EP">
 ## Strategy description
 
 This strategy implements a multistate design approach to allosteric biosensor engineering. Rather than relying on a single static conformation, this pipeline explores the dynamic conformational landscape of the sensor. It utilizes Steered Molecular Dynamics (SMD) and conformational relaxation to capture distinct active (ligand-bound) and inactive (unbound) structural states. Using Multistate LigandMPNN, sequences are designed to explicitly stabilize the intended conformations across these different states. The generated sequences are then threaded, folded using high-throughput prediction models, and aggressively filtered to ensure high-affinity target binding and proper allosteric switching upon ligand engagement.
