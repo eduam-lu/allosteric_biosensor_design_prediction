@@ -2,7 +2,7 @@
 
 This folder contains the code for Allodesigner LP (Strategy 1) in its Snakemake implementation.
 
-<img src="pipeline1.png" alt="Allodesigner LP">
+<img src="pipeline11.png" alt="Allodesigner LP">
 
 
 ## Contents of the folder
