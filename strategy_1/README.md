@@ -1,5 +1,5 @@
 # Allodesigner LP: Allosteric binding pocket redesign
-<img src="pipeline1.png" alt="Allodesigner LP">
+<img src="pipeline11.png" alt="Allodesigner LP">
 
 ## Strategy description
 
